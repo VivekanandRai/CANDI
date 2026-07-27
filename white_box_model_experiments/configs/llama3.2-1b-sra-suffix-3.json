@@ -1,0 +1,28 @@
+{
+    "model_name": "llama3.2-1b",
+    "dataset": "failsafeqa",
+    "output_dir": null,
+
+    "base_method": "sra",
+    "method": "sra",
+    "num_queries": 30,
+
+    "prompt": {
+        "system_prompt": "You are a helpful assistant.",
+        "prompt_format": "Answer the question below based on the provided context: \n{context}\nIn case the passages do not contain the necessary information to answer the question, please reply with: 'Unable to answer based on given passages.'\nQuestion:{query}\nAnswer:"
+    },
+
+    "sra": {
+        "common": {
+            "batch_size": 16,
+            "top_p": 0.99,
+            "top_k": 100,
+            "threshold": 1000000,
+            "response_length": 128,
+            "prompt_length_threshold": 3,
+            "use_chat_template": false,
+            "defense_type": null,
+            "stagnation_patience": 50
+        }
+    }
+}

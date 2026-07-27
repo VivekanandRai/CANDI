@@ -1,0 +1,35 @@
+{
+  "model_name": "openai/gpt-5-nano",
+  "dataset": "faitheval",
+  "dataset_path": null,
+  "output_dir": "experiments/seca",
+  "base_method": "seca",
+  "method": "vanilla_seca",
+  "num_queries": 50,
+  "prompt": {
+    "system_prompt": "You are a helpful assistant.",
+    "prompt_format": "Answer the question below based on the provided context: \n{context}\nIn case the passages do not contain the necessary information to answer the question, please reply with: 'Unable to answer based on given passages.'\nQuestion:{query}\nAnswer:"
+  },
+  "seca": {
+    "common": {
+      "top_N_most_adversarial": 5,
+      "candidate_size_M": 3,
+      "max_iteration": 30,
+      "termination_threshold": null,
+      "semantic_proposer_model": "google/gemini-2.5-flash-lite",
+      "stagnation_patience": 5,
+      "semantic_similarity_threshold": 0.8,
+      "max_inflight": 8,
+      "max_retries": 3,
+      "request_timeout": 120,
+      "retry_delay": 5,
+      "target_max_new_tokens": 10000,
+      "target_temperature": 0.0,
+      "verbose": false
+    },
+    "vanilla_seca": {
+      "judge_model": "google/gemini-3.1-flash-lite-preview",
+      "semantic_judge_model": "google/gemini-3.1-flash-lite-preview"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+    "model_name": "llama3.2-1b",
+    "dataset": "failsafeqa",
+    "output_dir": null,
+
+    "base_method": "autodan",
+    "method": "vanilla_autodan",
+    "num_queries": 30,
+
+    "prompt": {
+        "system_prompt": "You are a helpful assistant.",
+        "prompt_format": "Answer the question below based on the provided context: \n{context}\nIn case the passages do not contain the necessary information to answer the question, please reply with: 'Unable to answer based on given passages.'\nQuestion:{query}\nAnswer:"
+    },
+
+    "autodan": {
+        "common": {
+            "num_steps": 100,
+            "batch_size": 8,
+            "num_elites": 4,
+            "crossover_rate": 0.5,
+            "mutation_rate": 0.01,
+            "optim_str_mode": "replace_query",
+            "num_points": 5,
+            "hga_interval": 5,
+            "allow_non_ascii": false,
+            "verbose": false,
+            "stagnation_patience": 50,
+            "initial_prompt_path": null,
+            "reference_prompts": null
+        },
+        "vanilla_autodan": {
+            "target_phrase": "Unable to answer",
+            "initial_generation": null
+        }
+    }
+}

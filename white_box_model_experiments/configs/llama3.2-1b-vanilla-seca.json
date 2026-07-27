@@ -1,0 +1,27 @@
+{
+    "model_name": "llama3.2-1b",
+    "dataset": "failsafeqa",
+    "output_dir": null,
+    "base_method": "seca",
+    "method": "vanilla_seca",
+    "num_queries": 10,
+    "prompt": {
+        "system_prompt": "You are a helpful assistant.",
+        "prompt_format": "Answer the question below based on the provided context:\n{context}\nIn case the passages do not contain the necessary information to answer the question, please reply with: 'Unable to answer based on given passages.'\nQuestion:{query}\nAnswer:"
+    },
+    "seca": {
+        "common": {
+            "top_N_most_adversarial": 5,
+            "candidate_size_M": 3,
+            "max_iteration": 10,
+            "termination_threshold": null,
+            "semantic_proposer_model": "openai/gpt-4o-mini",
+            "feasibility_evaluator_model": "openai/gpt-4o-mini",
+            "stagnation_patience": 5,
+            "verbose": false
+        },
+        "vanilla_seca": {
+            "target": "Unable to answer based on given passages."
+        }
+    }
+}
