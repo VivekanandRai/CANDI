@@ -16,14 +16,6 @@
 
 This directory contains the tooling for generating white-box experiment configs, creating execution scripts, and aggregating results.
 
-## What It Does
-
-The orchestrator solves three practical problems:
-
-1. Generate many experiment configs from templates instead of editing JSON manually.
-2. Create PBS or bash execution scripts with model-aware resource settings.
-3. Aggregate completed experiment results into CSV, JSON, or Markdown.
-
 ## Main Files
 
 - `experiment_orchestrator.py`: main CLI for generating experiment directories, configs, and scripts
@@ -152,16 +144,6 @@ python orchestrator/experiment_orchestrator.py \
   --overrides '{"gcg.common.num_steps": 200, "gcg.common.search_width": 128}'
 ```
 
-### Preview without creating files
-
-```bash
-python orchestrator/experiment_orchestrator.py \
-  --experiment_name "preview_only" \
-  --model_names llama3.2-1b \
-  --attack_types vanilla_pair \
-  --dry_run
-```
-
 ### Aggregate multiple experiment directories
 
 ```bash
@@ -170,7 +152,7 @@ python orchestrator/results_aggregator.py \
   --output_file all_results.csv
 ```
 
-## Optional: Distribute a Generated `run_all.sh` Across Local GPUs
+## Distribute a Generated `run_all.sh` Across Local GPUs
 
 If you generated `--script_mode bash`, you can split the sequential script into per-GPU workers:
 
@@ -266,34 +248,3 @@ python orchestrator/experiment_orchestrator.py \
 - older log directories under `logs/`
 
 It extracts experiment metadata, model and method information, timing, success rates, and other metrics from `overall_results.json` files where available.
-
-## Tips
-
-- Start with one model, one attack, and a small `--num_queries` to validate the full workflow.
-- Use `--dry_run` before launching large sweeps.
-- Prefer `--script_mode bash` for local debugging and `pbs` for cluster execution.
-- Keep overrides focused and use JSON dot-path keys, for example `{"pair.common.n_iterations": 5}`.
-- Aggregate after each completed sweep so you can quickly inspect failures or regressions.
-
-## Minimal End-to-End Example
-
-```bash
-cd white_box_model_experiments
-
-export HF_TOKEN="hf_..."
-export OPENROUTER_API_KEY="sk-or-v1-..."
-
-python orchestrator/experiment_orchestrator.py \
-  --experiment_name "demo" \
-  --model_names llama3.2-1b \
-  --attack_types vanilla_pair \
-  --dataset failsafeqa \
-  --script_mode bash \
-  --num_queries 5
-
-bash experiments/exp_NNN_demo/scripts/run_all.sh
-
-python orchestrator/results_aggregator.py \
-  --experiment_dir experiments/exp_NNN_demo \
-  --output_file demo_results.csv
-```

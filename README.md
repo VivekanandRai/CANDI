@@ -2,13 +2,20 @@
 
 Code and data for the COLM 2026 paper *Eliciting Intrinsic Hallucinations in Large Language Models*.
 
-Retrieval-augmented generation is supposed to keep a model tethered to its evidence. This work asks how
-hard that tether actually is to break. We adapt five adversarial attack families — originally developed
-for jailbreaking — into **faithfulness** attacks: instead of eliciting unsafe content, they search for
-minimally-perturbed, *semantically equivalent* queries that make a model contradict, ignore, or invent
-detail beyond the context it was given. We evaluate against five open-weight models and five API models
-across three grounded-QA benchmarks, and measure not just attack success but whether the adversarial
-query is still a faithful restatement of the original.
+Large language models are frequently paired with external knowledge sources such as RAG to improve factual accuracy and reduce hallucination.
+Such systems nevertheless remain susceptible to *intrinsic* hallucinations, in which the model generates
+unfaithful or fabricated information that is not supported by the retrieved evidence.
+
+Our work proposes a framework for assessing model robustness against this failure mode by
+stress-testing generators with natural, semantically equivalent variations of a user query, discovered
+via adversarial optimisation. The framework couples an intrinsic-hallucination objective with strict
+semantic-equivalence constraints, and is instantiated across a range of adversarial attack techniques in
+white-box, gray-box, and black-box threat models. Evaluating these attacks on 5 open-source and 5
+closed-source generator models across 3 datasets shows that even state-of-the-art models are highly
+susceptible to meaning-preserving perturbations, which degrade contextual faithfulness by up to 70.3%
+for `gpt-5-mini`. These results indicate that faithful use of in-context evidence remains fragile even
+in state-of-the-art LLMs, motivating architectures and training objectives that enforce robust grounding
+independent of surface query form.
 
 ---
 
@@ -18,8 +25,6 @@ query is still a faithful restatement of the original.
 |---|---|---|---|
 | **White-box** | Full access to weights, gradients and logits of a local Hugging Face model | GCG, AutoDAN, SRA, PAIR, SECA | [`white_box_model_experiments/run.py`](white_box_model_experiments/run.py) |
 | **Black-box** | Query-only access to an API model via OpenRouter | PAIR, SECA | [`run_pair.py`](black_box_model_experiments/run_pair.py), [`run_seca.py`](black_box_model_experiments/run_seca.py) |
-
-See [docs/methods.md](docs/methods.md) for what each attack optimises and how the two tracks differ.
 
 ---
 
