@@ -100,5 +100,4 @@ uv run python scripts/generate_configs.py white-box \
 
 ## Licence
 
-Code released under the [MIT Licence](LICENSE). The benchmark slices in `dataset/` are derived from
-third-party datasets under their own terms — see [dataset/README.md](dataset/README.md).
+Code released under the [MIT Licence](LICENSE).
