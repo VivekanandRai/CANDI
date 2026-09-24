@@ -95,12 +95,13 @@ class PAIR:
             keep_last_n=keep_last_n,
         )
 
-    def run(self, input_context: str, query: str, expected_response: str) -> Dict[str, Any]:
+    def run(self, input_context: str, query: str, expected_response: str, category: str) -> Dict[str, Any]:
         return self._run_coro_sync(
             self.run_async(
                 input_context=input_context,
                 query=query,
                 expected_response=expected_response,
+                category=category,
             )
         )
 
@@ -109,9 +110,24 @@ class PAIR:
         input_context: str,
         query: str,
         expected_response: str,
+        category: str,
     ) -> Dict[str, Any]:
+        valid_categories = {
+            "active_passive",
+            "hypernym",
+            "synonym",
+            "clause",
+        }
+
+        if category not in valid_categories:
+            raise ValueError(
+            f"Invalid category '{category}'. "
+            f"Expected one of: {sorted(valid_categories)}"
+        )
+
         logger.debug(
-            "PAIR run_async start | query=%s | expected_response=%s | input_context=%s",
+            "PAIR run_async start | category=%s | query=%s | expected_response=%s | input_context=%s",
+            category,
             query,
             expected_response,
             input_context,
@@ -173,6 +189,7 @@ class PAIR:
             original_query=query,
             expected_response=expected_response,
             system_prompt=self._get_attack_system_prompt(),
+            category=category,
         )
         logger.debug("PAIR conversation manager initialized for %d streams.", self.n_streams)
 
@@ -209,6 +226,7 @@ class PAIR:
                     input_context=input_context,
                     original_query=query,
                     expected_response=expected_response,
+                    category=category,
                     semaphore=llm_semaphore,
                 )
                 for snapshot in stream_snapshots
@@ -361,6 +379,7 @@ class PAIR:
         )
         return {
             "original_query": query,
+            "category":category,
             "adversarial_query": best_overall_prompt,
             "hallucination_score": best_overall_score,
             "iterations_run": iterations_run,
@@ -391,10 +410,12 @@ class PAIR:
         input_context: str,
         original_query: str,
         expected_response: str,
+        category: str,
         semaphore: asyncio.Semaphore,
     ) -> Dict[str, Any]:
         logger.debug(
-            "PAIR stream iteration start | stream=%d | current_best_prompt=%s | formatted_prompt=%s",
+            "PAIR stream iteration start | category=%s | stream=%d | current_best_prompt=%s | formatted_prompt=%s",
+            category,
             stream_idx,
             current_best_prompt,
             formatted_prompt,
@@ -402,6 +423,7 @@ class PAIR:
         attack_out = await self.attack_lm.generate_attack_prompt_async(
             formatted_prompt=formatted_prompt,
             current_best_prompt=current_best_prompt,
+            category=category,
             semaphore=semaphore,
         )
         logger.debug("PAIR stream %d attack output: %s", stream_idx, attack_out)
@@ -445,6 +467,7 @@ class PAIR:
             errors.append(f"stream {stream_idx} target generation error: {exc}")
             return {
                 "stream_idx": stream_idx,
+                "category":category,
                 "adversarial_prompt": adversarial_prompt,
                 "score": 0.0,
                 "feedback": feedback,
@@ -504,7 +527,8 @@ class PAIR:
             "improvement": improvement,
         }
         logger.debug(
-            "PAIR stream iteration complete | stream=%d | adversarial_prompt=%s | model_response=%s | score=%.4f | hallucination_eval=%s | semantic_eval=%s",
+            "PAIR stream iteration complete | category=%s | stream=%d | adversarial_prompt=%s | model_response=%s | score=%.4f | hallucination_eval=%s | semantic_eval=%s",
+            category,
             stream_idx,
             adversarial_prompt,
             model_response,
@@ -515,6 +539,7 @@ class PAIR:
 
         return {
             "stream_idx": stream_idx,
+            "category":category,
             "adversarial_prompt": adversarial_prompt,
             "score": score,
             "feedback": feedback,

@@ -355,94 +355,172 @@ def main() -> None:
     rows: List[Dict[str, Any]] = []
     result_files: List[Dict[str, Any]] = []
 
-    for i, sample in enumerate(tqdm(dataset, desc="PAIR", unit="query")):
-        query = str(sample.get("query", ""))
-        expected_answer = str(sample.get("answer", ""))
-        context = extract_context(sample)
-        logger.debug(
-            "Starting query %d/%d | idx=%s | query=%s | expected_answer=%s | context=%s",
-            i + 1,
-            len(dataset),
-            sample.get("idx"),
-            query,
-            expected_answer,
-            context,
-        )
+    categories = [
+        "active_passive",
+        "hypernym",
+        "synonym",
+        "clause",   
+    ]
 
-        start = time.perf_counter()
-        try:
-            result = pair.run(
-                input_context=context,
-                query=query,
-                expected_response=expected_answer,
+    total_runs = len(dataset) * len(categories)
+
+    with tqdm(total=total_runs, desc="PAIR", unit="run") as progress:
+
+        for i, sample in enumerate(dataset):
+
+            query = str(sample.get("query", ""))
+            expected_answer = str(sample.get("answer", ""))
+            context = extract_context(sample)
+
+            logger.debug(
+                "Starting query %d/%d | idx=%s | query=%s | expected_answer=%s | context=%s",
+                i + 1,
+                len(dataset),
+                sample.get("idx"),
+                query,
+                expected_answer,
+                context,
             )
-            error = result.get("error")
-        except Exception as exc:
-            logger.error("PAIR query %d failed with exception.", i + 1, exc_info=True)
-            result = {}
-            error = f"PAIR run error: {exc}"
-        elapsed = time.perf_counter() - start
 
-        row = {
-            "query_index": i,
-            "idx": sample.get("idx"),
-            "original_query": query,
-            "expected_answer": expected_answer,
-            "initial_response": result.get("initial_response"),
-            "initial_hallucination": result.get("initial_hallucination"),
-            "initial_hallucination_justification": result.get("initial_hallucination_justification"),
-            "adversarial_query": result.get("adversarial_query"),
-            "hallucination_score": result.get("hallucination_score"),
-            "iterations_run": result.get("iterations_run"),
-            "final_response": result.get("final_response"),
-            "final_hallucination": result.get("final_hallucination"),
-            "final_hallucination_justification": result.get("final_hallucination_justification"),
-            "conversation_history": result.get("conversation_history"),
-            "conversation_stats": result.get("conversation_stats"),
-            "attack_usage_aggregate": result.get("attack_usage_aggregate"),
-            "target_usage_aggregate": result.get("target_usage_aggregate"),
-            "judge_usage_aggregate": result.get("judge_usage_aggregate"),
-            "non_fatal_errors": result.get("non_fatal_errors"),
-            "time_taken_seconds": elapsed,
-            "error": error,
-        }
-        non_fatal_errors = row.get("non_fatal_errors")
-        if isinstance(non_fatal_errors, list):
-            for non_fatal_error in non_fatal_errors:
-                logger.debug("Query %d non-fatal warning: %s", i + 1, non_fatal_error)
+            for category in categories:
 
-        if row.get("error"):
-            logger.error("Query %d returned error: %s", i + 1, row["error"])
+                logger.info(
+                    "Starting query %d/%d | category=%s",
+                    i + 1,
+                    len(dataset),
+                    category,
+                )
 
-        rows.append(row)
+                start = time.perf_counter()
 
-        row_path = run_dir / f"query_{i:05d}.json"
-        write_error: Optional[str] = None
-        try:
-            with row_path.open("w", encoding="utf-8") as f:
-                json.dump(row, f, indent=2, ensure_ascii=False)
-            logger.debug("Wrote query result file: %s", row_path)
-        except Exception as exc:
-            write_error = str(exc)
-            logger.error("Failed to write query result file: %s", row_path, exc_info=True)
+                try:
+                    result = pair.run(
+                        input_context=context,
+                        query=query,
+                        expected_response=expected_answer,
+                        category=category,
+                    )
 
-        result_files.append(
-            {
-                "query_index": i,
-                "idx": sample.get("idx"),
-                "filename": row_path.name,
-                "path": str(row_path),
-                "write_error": write_error,
-            }
-        )
-        logger.info(
-            "Query %d/%d | final_hallucination=%s | error=%s",
-            i + 1,
-            len(dataset),
-            row.get("final_hallucination"),
-            row.get("error"),
-        )
-        logger.debug("Finished query %d/%d in %.4fs", i + 1, len(dataset), elapsed)
+                    error = result.get("error")
+
+                except Exception as exc:
+                    logger.error(
+                        "PAIR query %d | category=%s failed with exception.",
+                        i + 1,
+                        category,
+                        exc_info=True,
+                    )
+
+                    result = {}
+                    error = f"PAIR run error: {exc}"
+
+                elapsed = time.perf_counter() - start
+
+                row = {
+                    "query_index": i,
+                    "idx": sample.get("idx"),
+                    "category": category,
+
+                    "original_query": query,
+                    "expected_answer": expected_answer,
+
+                    "initial_response": result.get("initial_response"),
+                    "initial_hallucination": result.get("initial_hallucination"),
+                    "initial_hallucination_justification": result.get(
+                        "initial_hallucination_justification"
+                    ),
+
+                    "adversarial_query": result.get("adversarial_query"),
+                    "hallucination_score": result.get("hallucination_score"),
+                    "iterations_run": result.get("iterations_run"),
+
+                    "final_response": result.get("final_response"),
+                    "final_hallucination": result.get("final_hallucination"),
+                    "final_hallucination_justification": result.get(
+                        "final_hallucination_justification"
+                    ),
+
+                    "conversation_history": result.get("conversation_history"),
+                    "conversation_stats": result.get("conversation_stats"),
+
+                    "attack_usage_aggregate": result.get("attack_usage_aggregate"),
+                    "target_usage_aggregate": result.get("target_usage_aggregate"),
+                    "judge_usage_aggregate": result.get("judge_usage_aggregate"),
+
+                    "non_fatal_errors": result.get("non_fatal_errors"),
+
+                    "time_taken_seconds": elapsed,
+                    "error": error,
+                }
+
+                non_fatal_errors = row.get("non_fatal_errors")
+
+                if isinstance(non_fatal_errors, list):
+                    for non_fatal_error in non_fatal_errors:
+                        logger.debug(
+                            "Query %d | category=%s | non-fatal warning: %s",
+                            i + 1,
+                            category,
+                            non_fatal_error,
+                        )
+
+                if row.get("error"):
+                    logger.error(
+                        "Query %d | category=%s returned error: %s",
+                        i + 1,
+                        category,
+                        row["error"],
+                    )
+
+                rows.append(row)
+
+                row_path = run_dir / f"query_{i:05d}_{category}.json"
+                write_error: Optional[str] = None
+
+                try:
+                    with row_path.open("w", encoding="utf-8") as f:
+                        json.dump(row, f, indent=2, ensure_ascii=False)
+
+                    logger.debug("Wrote query result file: %s", row_path)
+
+                except Exception as exc:
+                    write_error = str(exc)
+
+                    logger.error(
+                        "Failed to write query result file: %s",
+                        row_path,
+                        exc_info=True,
+                    )
+
+                result_files.append(
+                    {
+                        "query_index": i,
+                        "idx": sample.get("idx"),
+                        "category": category,
+                        "filename": row_path.name,
+                        "path": str(row_path),
+                        "write_error": write_error,
+                    }
+                )
+
+                logger.info(
+                    "Query %d/%d | category=%s | final_hallucination=%s | error=%s",
+                    i + 1,
+                    len(dataset),
+                    category,
+                    row.get("final_hallucination"),
+                    row.get("error"),
+                )
+
+                logger.debug(
+                    "Finished query %d/%d | category=%s | elapsed=%.4fs",
+                    i + 1,
+                    len(dataset),
+                    category,
+                    elapsed,
+                )
+
+                progress.update(1)
 
     summary = compute_summary(rows)
     logger.debug("Computed run summary: %s", json.dumps(summary, ensure_ascii=False))
