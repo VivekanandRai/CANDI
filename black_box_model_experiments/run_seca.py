@@ -360,17 +360,29 @@ def main() -> None:
     logger.debug("Dataset name for run directory: %s", dataset_name)
 
     seca = build_seca_from_config(config)
+
+    categories = [
+        "active_passive",
+        "hypernym",
+        "synonym",
+        "clause",
+    ]
+    
     rows: List[Dict[str, Any]] = []
     result_files: List[Dict[str, Any]] = []
 
     for i, sample in enumerate(tqdm(dataset, desc="SECA", unit="query")):
+
         query = str(sample.get("query", ""))
         expected_answer = str(sample.get("answer", ""))
         context = extract_context(sample)
-        logger.debug(
-            "Starting query %d/%d | idx=%s | query=%s | expected_answer=%s | context=%s",
+
+        for category in categories:
+            logger.debug(
+            "Starting query %d/%d | category=%s | idx=%s | query=%s | expected_answer=%s | context=%s",
             i + 1,
             len(dataset),
+            category,
             sample.get("idx"),
             query,
             expected_answer,
@@ -383,6 +395,7 @@ def main() -> None:
                 input_context=context,
                 query=query,
                 expected_response=expected_answer,
+                category=category,
             )
             error = result.get("error")
         except Exception as exc:
@@ -394,6 +407,7 @@ def main() -> None:
         row = {
             "query_index": i,
             "idx": sample.get("idx"),
+            "category": category,
             "original_query": query,
             "expected_answer": expected_answer,
             "initial_response": result.get("initial_response"),
@@ -429,7 +443,7 @@ def main() -> None:
 
         rows.append(row)
 
-        row_path = run_dir / f"query_{i:05d}.json"
+        row_path = run_dir / f"query_{i:05d}_{category}.json"
         write_error: Optional[str] = None
         try:
             with row_path.open("w", encoding="utf-8") as f:
@@ -443,15 +457,17 @@ def main() -> None:
             {
                 "query_index": i,
                 "idx": sample.get("idx"),
+                "category": category,
                 "filename": row_path.name,
                 "path": str(row_path),
                 "write_error": write_error,
             }
         )
         logger.info(
-            "Query %d/%d | final_hallucination=%s | error=%s",
+            "Query %d/%d | category=%s | final_hallucination=%s | error=%s",
             i + 1,
             len(dataset),
+            category,
             row.get("final_hallucination"),
             row.get("error"),
         )
