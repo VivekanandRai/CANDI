@@ -387,24 +387,24 @@ def main() -> None:
             query,
             expected_answer,
             context,
-        )
+            )
 
-        start = time.perf_counter()
-        try:
-            result = seca.run(
+            start = time.perf_counter()
+            try:
+                result = seca.run(
                 input_context=context,
                 query=query,
                 expected_response=expected_answer,
                 category=category,
-            )
-            error = result.get("error")
-        except Exception as exc:
-            logger.error("SECA query %d failed with exception.", i + 1, exc_info=True)
-            result = {}
-            error = f"SECA run error: {exc}"
-        elapsed = time.perf_counter() - start
+                )
+                error = result.get("error")
+            except Exception as exc:
+                logger.error("SECA query %d failed with exception.", i + 1, exc_info=True)
+                result = {}
+                error = f"SECA run error: {exc}"
+            elapsed = time.perf_counter() - start
 
-        row = {
+            row = {
             "query_index": i,
             "idx": sample.get("idx"),
             "category": category,
@@ -432,46 +432,46 @@ def main() -> None:
             "non_fatal_errors": result.get("non_fatal_errors"),
             "time_taken_seconds": elapsed,
             "error": error,
-        }
-        non_fatal_errors = row.get("non_fatal_errors")
-        if isinstance(non_fatal_errors, list):
-            for non_fatal_error in non_fatal_errors:
-                logger.debug("Query %d non-fatal warning: %s", i + 1, non_fatal_error)
-
-        if row.get("error"):
-            logger.error("Query %d returned error: %s", i + 1, row["error"])
-
-        rows.append(row)
-
-        row_path = run_dir / f"query_{i:05d}_{category}.json"
-        write_error: Optional[str] = None
-        try:
-            with row_path.open("w", encoding="utf-8") as f:
-                json.dump(row, f, indent=2, ensure_ascii=False)
-            logger.debug("Wrote query result file: %s", row_path)
-        except Exception as exc:
-            write_error = str(exc)
-            logger.error("Failed to write query result file: %s", row_path, exc_info=True)
-
-        result_files.append(
-            {
-                "query_index": i,
-                "idx": sample.get("idx"),
-                "category": category,
-                "filename": row_path.name,
-                "path": str(row_path),
-                "write_error": write_error,
             }
-        )
-        logger.info(
-            "Query %d/%d | category=%s | final_hallucination=%s | error=%s",
-            i + 1,
-            len(dataset),
-            category,
-            row.get("final_hallucination"),
-            row.get("error"),
-        )
-        logger.debug("Finished query %d/%d in %.4fs", i + 1, len(dataset), elapsed)
+            non_fatal_errors = row.get("non_fatal_errors")
+            if isinstance(non_fatal_errors, list):
+                for non_fatal_error in non_fatal_errors:
+                    logger.debug("Query %d non-fatal warning: %s", i + 1, non_fatal_error)
+
+            if row.get("error"):
+                logger.error("Query %d returned error: %s", i + 1, row["error"])
+
+            rows.append(row)
+
+            row_path = run_dir / f"query_{i:05d}_{category}.json"
+            write_error: Optional[str] = None
+            try:
+                with row_path.open("w", encoding="utf-8") as f:
+                    json.dump(row, f, indent=2, ensure_ascii=False)
+                logger.debug("Wrote query result file: %s", row_path)
+            except Exception as exc:
+                write_error = str(exc)
+                logger.error("Failed to write query result file: %s", row_path, exc_info=True)
+
+            result_files.append(
+                {
+                    "query_index": i,
+                    "idx": sample.get("idx"),
+                    "category": category,
+                    "filename": row_path.name,
+                    "path": str(row_path),
+                    "write_error": write_error,
+                }
+            )
+            logger.info(
+                "Query %d/%d | category=%s | final_hallucination=%s | error=%s",
+                i + 1,
+                len(dataset),
+                category,
+                row.get("final_hallucination"),
+                row.get("error"),
+            )
+            logger.debug("Finished query %d/%d in %.4fs", i + 1, len(dataset), elapsed)
 
     summary = compute_summary(rows)
     logger.debug("Computed run summary: %s", json.dumps(summary, ensure_ascii=False))
