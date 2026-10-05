@@ -238,56 +238,213 @@ def build_seca_from_config(config: Dict[str, Any]) -> VanillaSECA:
     )
 
 
-def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    num_queries_evaluated = len(rows)
-    successful = [r for r in rows if r.get("error") in (None, "")]
-    num_successful_queries = len(successful)
+# def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+#     num_queries_evaluated = len(rows)
+#     successful = [r for r in rows if r.get("error") in (None, "")]
+#     num_successful_queries = len(successful)
 
-    def _rate(numerator: int, denominator: int) -> float:
+#     def _rate(numerator: int, denominator: int) -> float:
+#         return numerator / denominator if denominator > 0 else 0.0
+
+#     initial_true = sum(
+#         1 for r in successful if isinstance(r.get("initial_hallucination"), bool) and r["initial_hallucination"]
+#     )
+#     final_true = sum(
+#         1 for r in successful if isinstance(r.get("final_hallucination"), bool) and r["final_hallucination"]
+#     )
+
+#     initially_clean = [
+#         r for r in successful if isinstance(r.get("initial_hallucination"), bool) and not r["initial_hallucination"]
+#     ]
+#     attack_success = sum(
+#         1
+#         for r in initially_clean
+#         if isinstance(r.get("final_hallucination"), bool) and r["final_hallucination"]
+#     )
+
+#     score_vals = [
+#         float(r["hallucination_score"])
+#         for r in successful
+#         if isinstance(r.get("hallucination_score"), (int, float))
+#     ]
+#     time_vals = [
+#         float(r["time_taken_seconds"])
+#         for r in successful
+#         if isinstance(r.get("time_taken_seconds"), (int, float))
+#     ]
+#     iter_vals = [
+#         float(r["iterations_run"])
+#         for r in successful
+#         if isinstance(r.get("iterations_run"), (int, float))
+#     ]
+
+#     return {
+#         "num_queries_evaluated": num_queries_evaluated,
+#         "num_successful_queries": num_successful_queries,
+#         "initial_hallucination_rate": _rate(initial_true, num_successful_queries),
+#         "final_hallucination_rate": _rate(final_true, num_successful_queries),
+#         "attack_success_rate": _rate(attack_success, len(initially_clean)),
+#         "mean_best_hallucination_score": mean(score_vals) if score_vals else None,
+#         "mean_time_taken_seconds": mean(time_vals) if time_vals else None,
+#         "mean_iterations_run": mean(iter_vals) if iter_vals else None,
+#     }
+
+#new compute summary report->
+
+def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    categories = [
+        "active_passive",
+        "hypernym",
+        "synonym",
+        "clause",
+    ]
+
+    def rate(numerator: int, denominator: int) -> float:
         return numerator / denominator if denominator > 0 else 0.0
 
-    initial_true = sum(
-        1 for r in successful if isinstance(r.get("initial_hallucination"), bool) and r["initial_hallucination"]
-    )
-    final_true = sum(
-        1 for r in successful if isinstance(r.get("final_hallucination"), bool) and r["final_hallucination"]
-    )
+    def mean_if_values(values: List[float]) -> Optional[float]:
+        return mean(values) if values else None
 
-    initially_clean = [
-        r for r in successful if isinstance(r.get("initial_hallucination"), bool) and not r["initial_hallucination"]
-    ]
-    attack_success = sum(
-        1
-        for r in initially_clean
-        if isinstance(r.get("final_hallucination"), bool) and r["final_hallucination"]
-    )
-
-    score_vals = [
-        float(r["hallucination_score"])
-        for r in successful
-        if isinstance(r.get("hallucination_score"), (int, float))
-    ]
-    time_vals = [
-        float(r["time_taken_seconds"])
-        for r in successful
-        if isinstance(r.get("time_taken_seconds"), (int, float))
-    ]
-    iter_vals = [
-        float(r["iterations_run"])
-        for r in successful
-        if isinstance(r.get("iterations_run"), (int, float))
-    ]
-
-    return {
-        "num_queries_evaluated": num_queries_evaluated,
-        "num_successful_queries": num_successful_queries,
-        "initial_hallucination_rate": _rate(initial_true, num_successful_queries),
-        "final_hallucination_rate": _rate(final_true, num_successful_queries),
-        "attack_success_rate": _rate(attack_success, len(initially_clean)),
-        "mean_best_hallucination_score": mean(score_vals) if score_vals else None,
-        "mean_time_taken_seconds": mean(time_vals) if time_vals else None,
-        "mean_iterations_run": mean(iter_vals) if iter_vals else None,
+    summary: Dict[str, Any] = {
+        "total_runs": len(rows),
+        "total_queries": len(set(
+            r.get("query_index")
+            for r in rows
+            if r.get("query_index") is not None
+        )),
+        "total_categories": len(categories),
+        "expected_total_runs": len(set(
+            r.get("query_index")
+            for r in rows
+            if r.get("query_index") is not None
+        )) * len(categories),
+        "total_successful_runs": 0,
+        "total_failed_runs": 0,
+        "by_category": {},
     }
+
+    for category in categories:
+        category_rows = [
+            r for r in rows
+            if r.get("category") == category
+        ]
+
+        successful = [
+            r for r in category_rows
+            if r.get("error") in (None, "")
+        ]
+
+        failed = [
+            r for r in category_rows
+            if r.get("error") not in (None, "")
+        ]
+
+        initial_true = sum(
+            1
+            for r in successful
+            if isinstance(r.get("initial_hallucination"), bool)
+            and r["initial_hallucination"]
+        )
+
+        final_true = sum(
+            1
+            for r in successful
+            if isinstance(r.get("final_hallucination"), bool)
+            and r["final_hallucination"]
+        )
+
+        initially_clean = [
+            r
+            for r in successful
+            if isinstance(r.get("initial_hallucination"), bool)
+            and not r["initial_hallucination"]
+        ]
+
+        attack_success = sum(
+            1
+            for r in initially_clean
+            if isinstance(r.get("final_hallucination"), bool)
+            and r["final_hallucination"]
+        )
+
+        score_vals = [
+            float(r["hallucination_score"])
+            for r in successful
+            if isinstance(r.get("hallucination_score"), (int, float))
+        ]
+
+        time_vals = [
+            float(r["time_taken_seconds"])
+            for r in successful
+            if isinstance(r.get("time_taken_seconds"), (int, float))
+        ]
+
+        iter_vals = [
+            float(r["iterations_run"])
+            for r in successful
+            if isinstance(r.get("iterations_run"), (int, float))
+        ]
+
+        candidate_vals = [
+            float(r["total_candidates_evaluated"])
+            for r in successful
+            if isinstance(r.get("total_candidates_evaluated"), (int, float))
+        ]
+
+        feasible_vals = [
+            float(r["feasible_candidates_count"])
+            for r in successful
+            if isinstance(r.get("feasible_candidates_count"), (int, float))
+        ]
+
+        category_summary = {
+            "total_runs": len(category_rows),
+            "successful_runs": len(successful),
+            "failed_runs": len(failed),
+
+            "initial_hallucination_count": initial_true,
+            "final_hallucination_count": final_true,
+
+            "initial_hallucination_rate": rate(
+                initial_true,
+                len(successful),
+            ),
+
+            "final_hallucination_rate": rate(
+                final_true,
+                len(successful),
+            ),
+
+            "attack_success_count": attack_success,
+
+            "attack_success_rate": rate(
+                attack_success,
+                len(initially_clean),
+            ),
+
+            "mean_best_hallucination_score": mean_if_values(score_vals),
+
+            "mean_time_taken_seconds": mean_if_values(time_vals),
+
+            "mean_iterations_run": mean_if_values(iter_vals),
+
+            "mean_candidates_evaluated": mean_if_values(candidate_vals),
+
+            "mean_feasible_candidates": mean_if_values(feasible_vals),
+
+            "errors": [
+                r.get("error")
+                for r in failed
+                if r.get("error")
+            ],
+        }
+
+        summary["by_category"][category] = category_summary
+
+        summary["total_successful_runs"] += len(successful)
+        summary["total_failed_runs"] += len(failed)
+
+    return summary
 
 
 def main() -> None:
@@ -506,21 +663,79 @@ def main() -> None:
         logger.error("Failed to write summary report: %s", summary_path, exc_info=True)
         raise
 
-    print("\n" + "=" * 60)
-    print("SECA RUN SUMMARY")
-    print("=" * 60)
-    print(f"Queries evaluated: {summary['num_queries_evaluated']}")
-    print(f"Successful queries: {summary['num_successful_queries']}")
-    print(f"Initial hallucination rate: {summary['initial_hallucination_rate']:.4f}")
-    print(f"Final hallucination rate: {summary['final_hallucination_rate']:.4f}")
-    print(f"Attack success rate: {summary['attack_success_rate']:.4f}")
-    print(f"Mean best hallucination score: {summary['mean_best_hallucination_score']}")
-    print(f"Mean time/query (s): {summary['mean_time_taken_seconds']}")
-    print(f"Mean iterations run: {summary['mean_iterations_run']}")
-    print(f"Run directory: {run_dir}")
-    print(f"Summary report: {summary_path}")
-    print("=" * 60)
+    # print("\n" + "=" * 60)
+    # print("SECA RUN SUMMARY")
+    # print("=" * 60)
+    # print(f"Queries evaluated: {summary['num_queries_evaluated']}")
+    # print(f"Successful queries: {summary['num_successful_queries']}")
+    # print(f"Initial hallucination rate: {summary['initial_hallucination_rate']:.4f}")
+    # print(f"Final hallucination rate: {summary['final_hallucination_rate']:.4f}")
+    # print(f"Attack success rate: {summary['attack_success_rate']:.4f}")
+    # print(f"Mean best hallucination score: {summary['mean_best_hallucination_score']}")
+    # print(f"Mean time/query (s): {summary['mean_time_taken_seconds']}")
+    # print(f"Mean iterations run: {summary['mean_iterations_run']}")
+    # print(f"Run directory: {run_dir}")
+    # print(f"Summary report: {summary_path}")
+    # print("=" * 60)
 
+    #updated console output: new summary report ->
+
+    print("\n" + "=" * 70)
+    print("SECA RUN SUMMARY")
+    print("=" * 70)
+
+    print(f"Total original queries : {summary['total_queries']}")
+    print(f"Total categories       : {summary['total_categories']}")
+    print(f"Total runs             : {summary['total_runs']}")
+    print(f"Expected runs          : {summary['expected_total_runs']}")
+    print(f"Successful runs        : {summary['total_successful_runs']}")
+    print(f"Failed runs            : {summary['total_failed_runs']}")
+
+    print("\nCATEGORY-WISE RESULTS")
+    print("-" * 70)
+
+    for category, stats in summary["by_category"].items():
+        print(f"\n[{category}]")
+        print(f"  Runs                    : {stats['total_runs']}")
+        print(f"  Successful              : {stats['successful_runs']}")
+        print(f"  Failed                  : {stats['failed_runs']}")
+        print(
+            f"  Initial hallucination  : "
+            f"{stats['initial_hallucination_rate']:.4f}"
+        )
+        print(
+            f"  Final hallucination    : "
+            f"{stats['final_hallucination_rate']:.4f}"
+        )
+        print(
+            f"  Attack success rate    : "
+            f"{stats['attack_success_rate']:.4f}"
+        )
+        print(
+            f"  Mean hallucination     : "
+            f"{stats['mean_best_hallucination_score']}"
+        )
+        print(
+            f"  Mean iterations        : "
+            f"{stats['mean_iterations_run']}"
+        )
+        print(
+            f"  Mean candidates        : "
+            f"{stats['mean_candidates_evaluated']}"
+        )
+        print(
+            f"  Mean feasible          : "
+            f"{stats['mean_feasible_candidates']}"
+        )
+        print(
+            f"  Mean time (seconds)    : "
+            f"{stats['mean_time_taken_seconds']}"
+        )
+
+    print("\n" + "-" * 70)
+    print(f"Run directory : {run_dir}")
+    print(f"Summary report: {summary_path}")
+    print("=" * 70)
 
 if __name__ == "__main__":
     main()

@@ -137,7 +137,7 @@ class BaseSECA(abc.ABC):
         stagnation_triggered = False
         llm_semaphore = asyncio.Semaphore(self.max_inflight)
         non_fatal_errors: List[str] = []
-
+        fatal_error: Optional[str] = None
         target_usage_aggregate = init_usage_aggregate()
         judge_usage_aggregate = init_usage_aggregate()
         proposer_usage_aggregate = init_usage_aggregate()
@@ -160,8 +160,35 @@ class BaseSECA(abc.ABC):
                 initial_target_usage,
             )
         except Exception as exc:
-            logger.warning("SECA initial target generation failed: %s", exc)
-            non_fatal_errors.append(f"Initial target generation error: {exc}")
+            logger.error("SECA initial target generation failed: %s", exc, exc_info=True)
+            fatal_error = f"Initial target generation error: {exc}"
+
+        if fatal_error is not None:
+            return {
+            "category": category,
+            "original_query": original_query,
+            "adversarial_query": query,
+            "hallucination_score": 0.0,
+            "iterations_run": 0,
+            "initial_response": None,
+            "initial_hallucination": None,
+            "initial_hallucination_justification": "",
+            "final_response": None,
+            "final_hallucination": None,
+            "final_hallucination_justification": "",
+            "best_objective_value": 0.0,
+            "best_idx_tuple": (0, -1),
+            "total_candidates_evaluated": 0,
+            "feasible_candidates_count": 0,
+            "all_parents_list": [],
+            "all_children_list": [],
+            "target_usage_aggregate": target_usage_aggregate,
+            "judge_usage_aggregate": judge_usage_aggregate,
+            "proposer_usage_aggregate": proposer_usage_aggregate,
+            "non_fatal_errors": [],
+            "stagnation_triggered": False,
+            "error": fatal_error,
+            }
 
         if initial_response is not None:
             initial_hallucination_eval = await self.hallucination_judge.evaluate_async(
@@ -291,6 +318,7 @@ class BaseSECA(abc.ABC):
             raw_candidates = await asyncio.gather(*candidate_tasks, return_exceptions=True)
             objective_candidates: List[Dict[str, Any]] = []
             children_list: List[Tuple[str, float, Tuple[int, int]]] = []
+            candidate_fatal_errors: List[str] = []
             for raw_item, meta in zip(raw_candidates, candidate_meta):
                 candidate_index, parent_index, parent_query = meta
                 if isinstance(raw_item, Exception):
@@ -310,9 +338,15 @@ class BaseSECA(abc.ABC):
                         "target_usage": None,
                         "judge_usage": None,
                         "errors": [f"Candidate evaluation error idx={candidate_index}: {raw_item}"],
+                        "fatal_error": f"Candidate evaluation error idx={candidate_index}: {raw_item}",
                     }
                 else:
                     candidate = raw_item
+
+                candidate_fatal_error = candidate.get("fatal_error")
+
+                if candidate_fatal_error:
+                    candidate_fatal_errors.append(str(candidate_fatal_error))
 
                 merge_usage(proposer_usage_aggregate, candidate.get("proposer_usage"))
                 merge_usage(target_usage_aggregate, candidate.get("target_usage"))
@@ -337,6 +371,17 @@ class BaseSECA(abc.ABC):
                 iteration + 1,
                 len(objective_candidates),
             )
+
+            if objective_candidates and len(candidate_fatal_errors) == len(objective_candidates):
+                fatal_error = (
+                    "All SECA candidate target generations failed. "
+                    + "; ".join(candidate_fatal_errors)
+                )
+                logger.error(
+                    "SECA run failed because all candidates failed in iteration %d.",
+                    iteration + 1,
+                )
+                break
 
             improved_candidates = [
                 c for c in objective_candidates if float(c.get("objective", 0.0)) > best_obj
@@ -464,7 +509,7 @@ class BaseSECA(abc.ABC):
             final_hallucination_eval,
         )
 
-        if not isinstance(final_response, str) or not isinstance(final_hallucination_eval, dict):
+        if (fatal_error is None and ( not isinstance(final_response, str) or not isinstance(final_hallucination_eval, dict))):
             logger.debug("SECA final metadata incomplete; running final evaluation fallback.")
             try:
                 final_response, final_target_usage = await self._generate_target_response_async(
@@ -492,7 +537,7 @@ class BaseSECA(abc.ABC):
                     )
             except Exception as exc:
                 logger.error("SECA final evaluation failed: %s", exc, exc_info=True)
-                non_fatal_errors.append(f"Final evaluation error: {exc}")
+                fatal_error = f"Final evaluation error: {exc}"
 
         logger.debug(
             "SECA run_async complete | category=%s | best_query=%s | best_obj=%.4f | iterations_run=%d | final_hallucination=%s",
@@ -529,7 +574,7 @@ class BaseSECA(abc.ABC):
             "proposer_usage_aggregate": proposer_usage_aggregate,
             "non_fatal_errors": non_fatal_errors,
             "stagnation_triggered": stagnation_triggered,
-            "error": None,
+            "error": fatal_error,
         }
 
     async def _evaluate_candidate_objective(
@@ -589,6 +634,7 @@ class BaseSECA(abc.ABC):
                 "target_usage": None,
                 "judge_usage": None,
                 "errors": [],
+                "fatal_error": f"Objective evaluation error idx={(candidate_index, parent_index)}: {exc}",
             }
 
         for err in objective_out.get("errors", []):
@@ -615,6 +661,7 @@ class BaseSECA(abc.ABC):
             "target_usage": objective_out.get("target_usage"),
             "judge_usage": objective_out.get("judge_usage"),
             "errors": errors,
+            "fatal_error": objective_out.get("fatal_error"),
         }
 
     async def _generate_semantic_equivalent_async(

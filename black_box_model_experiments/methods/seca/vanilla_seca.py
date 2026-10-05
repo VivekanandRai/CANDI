@@ -52,6 +52,7 @@ class VanillaSECA(BaseSECA):
                     "target_usage": None,
                     "judge_usage": None,
                     "errors": errors,
+                    "fatal_error": f"Target generation error: {exc}",
                 }
 
         if hallucination_eval is None:

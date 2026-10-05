@@ -136,6 +136,7 @@ class PAIR:
         judge_usage_aggregate = init_usage_aggregate()
         attack_usage_aggregate = init_usage_aggregate()
         non_fatal_errors: List[str] = []
+        fatal_error: Optional[str] = None
         llm_semaphore = asyncio.Semaphore(self.max_inflight)
 
         initial_response: Optional[str] = None
@@ -160,8 +161,30 @@ class PAIR:
                 initial_gen_usage,
             )
         except Exception as exc:
-            logger.warning("PAIR initial target generation failed: %s", exc)
-            non_fatal_errors.append(f"Initial target generation error: {exc}")
+            logger.error("PAIR initial target generation failed: %s", exc, exc_info=True)
+            fatal_error = f"Initial target generation error: {exc}"
+
+        if fatal_error is not None:
+            return {
+            "original_query": query,
+            "category": category,
+            "adversarial_query": query,
+            "hallucination_score": 0.0,
+            "iterations_run": 0,
+            "initial_response": None,
+            "initial_hallucination": None,
+            "initial_hallucination_justification": "",
+            "final_response": None,
+            "final_hallucination": None,
+            "final_hallucination_justification": "",
+            "conversation_history": [],
+            "conversation_stats": {},
+            "target_usage_aggregate": target_usage_aggregate,
+            "judge_usage_aggregate": judge_usage_aggregate,
+            "attack_usage_aggregate": attack_usage_aggregate,
+            "non_fatal_errors": [],
+            "error": fatal_error,
+            }
 
         if initial_response is not None:
             initial_hallucination_eval = await self.hallucination_judge.evaluate_async(
@@ -320,6 +343,22 @@ class PAIR:
                     model_response=stream_result.get("model_response"),
                 )
 
+            stream_failures = [
+                result
+                for result in stream_results
+                if result.get("model_response") is None
+            ]
+
+            if stream_results and len(stream_failures) == len(stream_results):
+                fatal_error = "All PAIR stream target generations failed."
+
+            if fatal_error is not None:
+                logger.error(
+                    "PAIR run failed because all streams failed in iteration %d.",
+                    iteration + 1,
+                )
+                break
+
             # Early stop once the configured hallucination score is reached.
             if best_overall_score >= self.hallucination_score_threshold:
                 logger.debug(
@@ -333,42 +372,43 @@ class PAIR:
         final_hallucination: Optional[bool] = None
         final_hallucination_justification = ""
 
-        try:
-            final_response, final_gen_usage = await self._generate_target_response_async(
-                input_context=input_context,
-                query=best_overall_prompt,
-                semaphore=llm_semaphore,
-            )
-            merge_usage(target_usage_aggregate, final_gen_usage)
-            logger.debug(
-                "PAIR final target response generated | best_prompt=%s | response=%s | usage=%s",
-                best_overall_prompt,
-                final_response,
-                final_gen_usage,
-            )
-
-            final_hallucination_eval = await self.hallucination_judge.evaluate_async(
-                context=input_context,
-                query=best_overall_prompt,
-                response=final_response,
-                correct_answer=expected_response,
-                semaphore=llm_semaphore,
-            )
-            merge_usage(judge_usage_aggregate, final_hallucination_eval.get("usage"))
-            final_hallucination = bool(final_hallucination_eval.get("hallucination_detected", False))
-            final_hallucination_justification = str(final_hallucination_eval.get("justification", ""))
-            logger.debug("PAIR final hallucination evaluation | eval=%s", final_hallucination_eval)
-            if final_hallucination_eval.get("error"):
+        if fatal_error is None:
+            try:
+                final_response, final_gen_usage = await self._generate_target_response_async(
+                    input_context=input_context,
+                    query=best_overall_prompt,
+                    semaphore=llm_semaphore,
+                )
+                merge_usage(target_usage_aggregate, final_gen_usage)
                 logger.debug(
-                    "PAIR final hallucination judge warning: %s",
-                    final_hallucination_eval["error"],
+                    "PAIR final target response generated | best_prompt=%s | response=%s | usage=%s",
+                    best_overall_prompt,
+                    final_response,
+                    final_gen_usage,
                 )
-                non_fatal_errors.append(
-                    f"Final hallucination judge warning: {final_hallucination_eval['error']}"
+
+                final_hallucination_eval = await self.hallucination_judge.evaluate_async(
+                    context=input_context,
+                    query=best_overall_prompt,
+                    response=final_response,
+                    correct_answer=expected_response,
+                    semaphore=llm_semaphore,
                 )
-        except Exception as exc:
-            logger.error("PAIR final evaluation failed: %s", exc, exc_info=True)
-            non_fatal_errors.append(f"Final evaluation error: {exc}")
+                merge_usage(judge_usage_aggregate, final_hallucination_eval.get("usage"))
+                final_hallucination = bool(final_hallucination_eval.get("hallucination_detected", False))
+                final_hallucination_justification = str(final_hallucination_eval.get("justification", ""))
+                logger.debug("PAIR final hallucination evaluation | eval=%s", final_hallucination_eval)
+                if final_hallucination_eval.get("error"):
+                    logger.debug(
+                        "PAIR final hallucination judge warning: %s",
+                        final_hallucination_eval["error"],
+                    )
+                    non_fatal_errors.append(
+                        f"Final hallucination judge warning: {final_hallucination_eval['error']}"
+                    )
+            except Exception as exc:
+                logger.error("PAIR final evaluation failed: %s", exc, exc_info=True)
+                fatal_error = f"Final evaluation error: {exc}"
 
         logger.debug(
             "PAIR run_async complete | best_prompt=%s | best_score=%.4f | iterations_run=%d | final_hallucination=%s",
@@ -399,7 +439,7 @@ class PAIR:
             "judge_usage_aggregate": judge_usage_aggregate,
             "attack_usage_aggregate": attack_usage_aggregate,
             "non_fatal_errors": non_fatal_errors,
-            "error": None,
+            "error": fatal_error,
         }
 
     async def _run_stream_iteration(
