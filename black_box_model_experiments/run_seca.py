@@ -415,6 +415,16 @@ def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 len(successful),
             ),
 
+            "clean_accuracy": rate(
+                len(successful) - initial_true,
+                len(successful),
+            ),
+
+            "adversarial_accuracy": rate(
+                len(successful) - final_true,
+                len(successful),
+            ),
+
             "attack_success_count": attack_success,
 
             "attack_success_rate": rate(
@@ -707,6 +717,17 @@ def main() -> None:
             f"  Final hallucination    : "
             f"{stats['final_hallucination_rate']:.4f}"
         )
+
+        print(
+            f"  Clean accuracy         : "
+            f"{stats['clean_accuracy']:.4f}"
+        )
+
+        print(
+            f"  Adversarial accuracy   : "
+            f"{stats['adversarial_accuracy']:.4f}"
+        )
+
         print(
             f"  Attack success rate    : "
             f"{stats['attack_success_rate']:.4f}"
