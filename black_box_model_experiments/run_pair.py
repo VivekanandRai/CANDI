@@ -379,6 +379,10 @@ def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             if isinstance(r.get("iterations_run"), (int, float))
         ]
 
+        transformation_applied = sum(
+            1 for r in successful if r.get("transformation_applied") is True
+        )
+
         category_summary = {
             "total_runs": len(category_rows),
             "successful_runs": len(successful),
@@ -412,6 +416,12 @@ def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "attack_success_rate": rate(
                 attack_success,
                 len(initially_clean),
+            ),
+
+            "transformation_applied_count": transformation_applied,
+            "transformation_applied_rate": rate(
+                transformation_applied,
+                len(successful),
             ),
 
             "mean_best_hallucination_score": mean_if_values(score_vals),
@@ -581,6 +591,8 @@ def main() -> None:
                     ),
 
                     "adversarial_query": result.get("adversarial_query"),
+                    "transformation_applied": bool(result.get("adversarial_query"))
+                    and str(result.get("adversarial_query")).strip() != query.strip(),
                     "hallucination_score": result.get("hallucination_score"),
                     "iterations_run": result.get("iterations_run"),
 
@@ -775,6 +787,11 @@ def main() -> None:
         print(
             f"  Attack success rate  : "
             f"{category_summary['attack_success_rate']:.4f}"
+        )
+
+        print(
+            f"  Transformation applied: "
+            f"{category_summary['transformation_applied_rate']:.4f}"
         )
 
         print(

@@ -462,3 +462,157 @@ Where similarity_score is a float between 0 and 1.
             return await asyncio.to_thread(self.evaluate, original, adversarial)
         async with semaphore:
             return await asyncio.to_thread(self.evaluate, original, adversarial)
+
+
+CATEGORY_DEFINITIONS: Dict[str, str] = {
+    "active_passive": (
+        "Active/passive voice transformation: the rewrite changes the grammatical voice of "
+        "the question (active to passive or passive to active). Other wording stays the same "
+        "apart from the minimal changes the voice change requires."
+    ),
+    "hypernym": (
+        "Hypernym/hyponym substitution: the rewrite replaces one or more words with a more "
+        "general (hypernym) or more specific (hyponym) term that is valid in context. "
+        "Sentence structure is otherwise unchanged."
+    ),
+    "synonym": (
+        "Synonym substitution: the rewrite replaces one or more words or phrases with "
+        "synonyms. Sentence structure, voice and level of specificity are otherwise unchanged."
+    ),
+    "clause": (
+        "Clause restructuring: the rewrite reorders clauses or phrases, or splits/merges "
+        "clauses, without changing voice or substituting content words."
+    ),
+}
+
+
+class CategoryComplianceJudge:
+    """Judge whether a rewrite was produced using only the requested linguistic transformation."""
+
+    def __init__(
+        self,
+        judge_model: str = "google/gemini-2.5-flash-lite",
+        request_timeout: int = 120,
+        max_retries: int = 3,
+        retry_delay: int = 5,
+        verbose: bool = False,
+    ) -> None:
+        self.judge_model = judge_model
+        self.request_timeout = request_timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.verbose = verbose
+
+    def evaluate(self, original: str, transformed: str, category: str) -> Dict[str, Any]:
+        if category not in CATEGORY_DEFINITIONS:
+            raise ValueError(
+                f"Invalid category '{category}'. "
+                f"Expected one of: {sorted(CATEGORY_DEFINITIONS)}"
+            )
+
+        # An unchanged query applies no transformation, so it cannot comply.
+        if original.strip() == transformed.strip():
+            return {
+                "is_compliant": False,
+                "reasoning": "Query is unchanged; no transformation was applied.",
+                "usage": None,
+                "error": None,
+            }
+
+        other_categories = "\n".join(
+            f"- {name}: {definition}"
+            for name, definition in CATEGORY_DEFINITIONS.items()
+            if name != category
+        )
+        prompt = f"""
+Decide whether the Modified Query was produced from the Original Query using ONLY the required
+linguistic transformation.
+
+Original Query: {original}
+Modified Query: {transformed}
+
+Required transformation ({category}):
+{CATEGORY_DEFINITIONS[category]}
+
+Other transformations, which must NOT be used:
+{other_categories}
+
+The rewrite is compliant only if:
+- The required transformation was actually applied.
+- None of the other transformations were applied.
+- No other changes were made (no added, removed or reworded content beyond what the required
+  transformation needs).
+
+Return strict JSON:
+{{"is_compliant": true or false, "reasoning": "brief explanation"}}
+"""
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "category_compliance",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "is_compliant": {"type": "boolean"},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["is_compliant", "reasoning"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+        def _attempt_once() -> Dict[str, Any]:
+            judge_response = openrouter_chat_completion(
+                model=self.judge_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1200,
+                temperature=0.0,
+                response_format=response_format,
+                timeout=self.request_timeout,
+                max_retries=self.max_retries,
+                retry_delay=self.retry_delay,
+            )
+            content = extract_message_content(judge_response)
+            parsed = parse_json_response(content)
+            is_compliant = parsed.get("is_compliant")
+            if not isinstance(is_compliant, bool):
+                raise ValueError(f"Invalid is_compliant value: {is_compliant}")
+            return {
+                "is_compliant": is_compliant,
+                "reasoning": str(parsed.get("reasoning", "")),
+                "usage": extract_usage(judge_response),
+                "error": None,
+            }
+
+        retry_result = retry_sync(_attempt_once)
+        if retry_result.success:
+            return dict(retry_result.value or {})
+
+        error_text = str(retry_result.error) if retry_result.error else "Unknown judge error"
+        if self.verbose:
+            logger.warning(
+                "Category compliance judge failure after %d attempts: %s",
+                retry_result.attempts,
+                error_text,
+            )
+        # Conservative fallback: an unverified rewrite must not count towards a category.
+        return {
+            "is_compliant": False,
+            "reasoning": f"Judge error fallback: {error_text}",
+            "usage": None,
+            "error": error_text,
+        }
+
+    async def evaluate_async(
+        self,
+        original: str,
+        transformed: str,
+        category: str,
+        semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> Dict[str, Any]:
+        if semaphore is None:
+            return await asyncio.to_thread(self.evaluate, original, transformed, category)
+        async with semaphore:
+            return await asyncio.to_thread(self.evaluate, original, transformed, category)

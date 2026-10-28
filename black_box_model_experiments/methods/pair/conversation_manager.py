@@ -105,6 +105,8 @@ class ConversationManager:
             f"Semantic Equivalent: {feedback_dict.get('is_semantically_equivalent')}",
             f"Hallucination Feedback: {feedback_dict.get('hallucination_justification', '')[:200]}",
             f"Similarity Feedback: {feedback_dict.get('similarity_reasoning', '')[:200]}",
+            f"Category Compliant: {feedback_dict.get('is_category_compliant')}",
+            f"Compliance Feedback: {feedback_dict.get('compliance_reasoning', '')[:200]}",
         ]
         if model_response is not None:
             feedback_lines.append(f"Model Response Preview: {model_response[:160]}")

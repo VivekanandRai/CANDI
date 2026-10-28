@@ -6,7 +6,11 @@ import logging
 import threading
 from typing import Any, Coroutine, Dict, List, Optional, Tuple
 
-from methods.pair.judge_handler import HallucinationJudge, SemanticEquivalenceJudge
+from methods.pair.judge_handler import (
+    CategoryComplianceJudge,
+    HallucinationJudge,
+    SemanticEquivalenceJudge,
+)
 from methods.retry_utils import retry_async
 from utils_openrouter import (
     extract_message_content,
@@ -51,6 +55,7 @@ class BaseSECA(abc.ABC):
         target_temperature: float = 0.0,
         judge_model: str = "google/gemini-2.5-flash-lite",
         semantic_judge_model: Optional[str] = None,
+        skip_initially_hallucinated: bool = False,
         verbose: bool = False,
     ) -> None:
         self.target_model = target_model
@@ -70,6 +75,7 @@ class BaseSECA(abc.ABC):
         self.retry_delay = retry_delay
         self.target_max_new_tokens = target_max_new_tokens
         self.target_temperature = target_temperature
+        self.skip_initially_hallucinated = skip_initially_hallucinated
         self.verbose = verbose
 
         self.hallucination_judge = HallucinationJudge(
@@ -82,6 +88,13 @@ class BaseSECA(abc.ABC):
         self.semantic_judge = SemanticEquivalenceJudge(
             judge_model=semantic_judge_model or judge_model,
             threshold=semantic_similarity_threshold,
+            request_timeout=request_timeout,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+            verbose=verbose,
+        )
+        self.compliance_judge = CategoryComplianceJudge(
+            judge_model=semantic_judge_model or judge_model,
             request_timeout=request_timeout,
             max_retries=max_retries,
             retry_delay=retry_delay,
@@ -209,7 +222,10 @@ class BaseSECA(abc.ABC):
                     f"Initial hallucination judge warning: {initial_hallucination_eval['error']}"
                 )
 
-        if bool((initial_hallucination_eval or {}).get("hallucination_detected", False)):
+        initially_hallucinated = bool(
+            (initial_hallucination_eval or {}).get("hallucination_detected", False)
+        )
+        if initially_hallucinated and self.skip_initially_hallucinated:
             initial_score = float(initial_hallucination_eval.get("hallucination_score", 0.0))
             logger.debug(
                 "SECA early stop on initial hallucination | score=%.4f | query=%s",
@@ -396,6 +412,7 @@ class BaseSECA(abc.ABC):
                     self._check_feasibility_async(
                         original_query=original_query,
                         new_query=str(c.get("query", "")),
+                        category=category,
                         semaphore=llm_semaphore,
                     )
                 )
@@ -419,6 +436,8 @@ class BaseSECA(abc.ABC):
 
                 feasibility_eval = feasibility_raw
                 merge_usage(judge_usage_aggregate, feasibility_eval.get("usage"))
+                if feasibility_eval.get("compliance_usage") is not None:
+                    merge_usage(judge_usage_aggregate, feasibility_eval.get("compliance_usage"))
                 if feasibility_eval.get("error"):
                     logger.debug(
                         "SECA feasibility judge warning idx=%s: %s",
@@ -429,7 +448,7 @@ class BaseSECA(abc.ABC):
                         f"Feasibility judge warning idx={candidate.get('idx_tuple')}: {feasibility_eval['error']}"
                     )
 
-                is_feasible = bool(feasibility_eval.get("is_equivalent", False))
+                is_feasible = bool(feasibility_eval.get("is_feasible", False))
                 if not is_feasible:
                     continue
 
@@ -803,18 +822,42 @@ Return strict JSON:
         self,
         original_query: str,
         new_query: str,
+        category: str,
         semaphore: Optional[asyncio.Semaphore] = None,
     ) -> Dict[str, Any]:
+        """A candidate is feasible only if it is semantically equivalent AND uses the category."""
         logger.debug(
-            "SECA feasibility check start | original_query=%s | new_query=%s",
+            "SECA feasibility check start | category=%s | original_query=%s | new_query=%s",
+            category,
             original_query,
             new_query,
         )
-        result = await self.semantic_judge.evaluate_async(
-            original=original_query,
-            adversarial=new_query,
-            semaphore=semaphore,
+        semantic_eval, compliance_eval = await asyncio.gather(
+            self.semantic_judge.evaluate_async(
+                original=original_query,
+                adversarial=new_query,
+                semaphore=semaphore,
+            ),
+            self.compliance_judge.evaluate_async(
+                original=original_query,
+                transformed=new_query,
+                category=category,
+                semaphore=semaphore,
+            ),
         )
+        errors = [e for e in (semantic_eval.get("error"), compliance_eval.get("error")) if e]
+        is_equivalent = bool(semantic_eval.get("is_equivalent", False))
+        is_compliant = bool(compliance_eval.get("is_compliant", False))
+        result = {
+            "is_feasible": is_equivalent and is_compliant,
+            "is_equivalent": is_equivalent,
+            "is_compliant": is_compliant,
+            "reasoning": semantic_eval.get("reasoning", ""),
+            "compliance_reasoning": compliance_eval.get("reasoning", ""),
+            "usage": semantic_eval.get("usage"),
+            "compliance_usage": compliance_eval.get("usage"),
+            "error": "; ".join(errors) if errors else None,
+        }
         logger.debug(
             "SECA feasibility check complete | original_query=%s | new_query=%s | result=%s",
             original_query,

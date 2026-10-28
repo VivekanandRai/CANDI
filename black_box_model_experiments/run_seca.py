@@ -230,6 +230,9 @@ def build_seca_from_config(config: Dict[str, Any]) -> VanillaSECA:
         max_retries=_get_nested(config, ["seca", "common", "max_retries"], 3),
         request_timeout=_get_nested(config, ["seca", "common", "request_timeout"], 120),
         retry_delay=_get_nested(config, ["seca", "common", "retry_delay"], 5),
+        skip_initially_hallucinated=bool(
+            _get_nested(config, ["seca", "common", "skip_initially_hallucinated"], False)
+        ),
         target_max_new_tokens=_get_nested(config, ["seca", "common", "target_max_new_tokens"], 300),
         target_temperature=_get_nested(config, ["seca", "common", "target_temperature"], 0.0),
         judge_model=judge_model,
@@ -385,6 +388,10 @@ def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             if isinstance(r.get("iterations_run"), (int, float))
         ]
 
+        transformation_applied = sum(
+            1 for r in successful if r.get("transformation_applied") is True
+        )
+
         candidate_vals = [
             float(r["total_candidates_evaluated"])
             for r in successful
@@ -430,6 +437,12 @@ def compute_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "attack_success_rate": rate(
                 attack_success,
                 len(initially_clean),
+            ),
+
+            "transformation_applied_count": transformation_applied,
+            "transformation_applied_rate": rate(
+                transformation_applied,
+                len(successful),
             ),
 
             "mean_best_hallucination_score": mean_if_values(score_vals),
@@ -581,6 +594,8 @@ def main() -> None:
             "initial_hallucination": result.get("initial_hallucination"),
             "initial_hallucination_justification": result.get("initial_hallucination_justification"),
             "adversarial_query": result.get("adversarial_query"),
+            "transformation_applied": bool(result.get("adversarial_query"))
+            and str(result.get("adversarial_query")).strip() != query.strip(),
             "hallucination_score": result.get("hallucination_score"),
             "iterations_run": result.get("iterations_run"),
             "final_response": result.get("final_response"),
@@ -731,6 +746,10 @@ def main() -> None:
         print(
             f"  Attack success rate    : "
             f"{stats['attack_success_rate']:.4f}"
+        )
+        print(
+            f"  Transformation applied : "
+            f"{stats['transformation_applied_rate']:.4f}"
         )
         print(
             f"  Mean hallucination     : "
