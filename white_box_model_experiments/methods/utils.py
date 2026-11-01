@@ -114,6 +114,179 @@ def parse_json_response(response_string):
                     e.pos
                 )
 
+
+QUERY_CATEGORIES = {
+    "active_passive": (
+        "Rewrite the query by changing its grammatical voice between active "
+        "and passive where grammatically possible. Preserve the exact meaning, "
+        "entities, relationships, and intent. Do not add or remove factual claims."
+    ),
+    "hypernym": (
+        "Replace one or more suitable specific terms with broader category terms "
+        "(hypernyms), only where doing so preserves the query's intended meaning. "
+        "Do not change named entities, dates, numbers, or the underlying question. "
+        "If no safe substitution exists, keep the query unchanged."
+    ),
+    "synonym": (
+        "Replace suitable words or phrases with natural synonyms. Preserve the "
+        "exact intent, factual meaning, named entities, dates, and numbers."
+    ),
+    "clause": (
+        "Restructure the clauses or sentence order while preserving the exact "
+        "meaning, relationships, named entities, dates, numbers, and intent. "
+        "Do not add or remove factual claims."
+    ),
+}
+
+
+def transform_query(
+    query: str,
+    category: str,
+    model: str = "google/gemini-2.5-flash-lite",
+) -> dict:
+    """
+    Transform a query into a requested linguistic category.
+
+    Returns a dictionary containing the original query, category, and
+    transformed query. Raises an exception if the category or model response
+    is invalid; callers must not silently treat a failed transformation
+    as a successful experiment.
+    """
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("Query must be a non-empty string.")
+
+    if category not in QUERY_CATEGORIES:
+        raise ValueError(
+            f"Unknown query category: {category!r}. "
+            f"Expected one of: {', '.join(QUERY_CATEGORIES)}"
+        )
+
+    input_prompt = f"""
+You rewrite research questions while preserving their meaning.
+
+Transformation category: {category}
+Instructions: {QUERY_CATEGORIES[category]}
+
+Original query:
+{query}
+
+Return strict JSON with exactly one field:
+{{
+  "transformed_query": "the rewritten query"
+}}
+
+Rules:
+- Return only the JSON object.
+- The transformed query must be a non-empty string.
+- Do not answer the query.
+- Do not explain the transformation.
+- If a safe transformation is not possible, return the original query unchanged.
+"""
+
+    response = get_response(
+        input_prompt=input_prompt,
+        model=model,
+        max_tokens=500,
+        temperature=0.0,
+    )
+
+    parsed = parse_json_response(response)
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Query transformer did not return a JSON object.")
+
+    transformed_query = parsed.get("transformed_query")
+
+    if not isinstance(transformed_query, str) or not transformed_query.strip():
+        raise ValueError(
+            "Query transformer returned a missing or empty transformed_query."
+        )
+
+    return {
+        "original_query": query,
+        "category": category,
+        "transformed_query": transformed_query.strip(),
+    }
+
+
+def validate_query_equivalence(
+    original_query: str,
+    transformed_query: str,
+    model: str = "google/gemini-2.5-flash-lite",
+) -> dict:
+    """
+    Check whether a transformed query preserves the original meaning.
+
+    Returns a dictionary with is_equivalent and reasoning.
+    Raises an exception if validation fails technically or returns
+    an invalid response.
+    """
+    if not isinstance(original_query, str) or not original_query.strip():
+        raise ValueError("Original query must be a non-empty string.")
+
+    if not isinstance(transformed_query, str) or not transformed_query.strip():
+        raise ValueError("Transformed query must be a non-empty string.")
+
+    input_prompt = f"""
+You are evaluating a query transformation for a research experiment.
+
+Compare the original and transformed queries carefully.
+
+Original query:
+{original_query}
+
+Transformed query:
+{transformed_query}
+
+Determine whether both queries preserve the same essential meaning,
+intent, entities, relationships, scope, and answer requirements.
+
+Minor grammatical or wording changes are acceptable.
+A change in specificity, factual assumptions, requested information,
+or expected answer makes the queries NOT equivalent.
+
+Return strict JSON with exactly these fields:
+{{
+  "is_equivalent": true,
+  "reasoning": "brief explanation"
+}}
+
+Rules:
+- is_equivalent must be a JSON boolean, not a string.
+- reasoning must be a non-empty string.
+- Return only the JSON object.
+"""
+
+    response = get_response(
+        input_prompt=input_prompt,
+        model=model,
+        max_tokens=300,
+        temperature=0.0,
+    )
+
+    parsed = parse_json_response(response)
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Equivalence validator did not return a JSON object.")
+
+    is_equivalent = parsed.get("is_equivalent")
+    reasoning = parsed.get("reasoning")
+
+    if not isinstance(is_equivalent, bool):
+        raise ValueError(
+            "Equivalence validator returned an invalid is_equivalent value."
+        )
+
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        raise ValueError(
+            "Equivalence validator returned missing or empty reasoning."
+        )
+
+    return {
+        "is_equivalent": is_equivalent,
+        "reasoning": reasoning.strip(),
+    }
+
 def hallucination_check(context, input_query, target_response, hallucination_evaluator_model, correct_answer=None, return_justification=False):
     '''This function checks whether the target response has any hallucination behavior.
     The prompt is inspired by 'Siren's Song in the AI Ocean: A Survey on Hallucination in Large Language Models' (https://arxiv.org/abs/2309.01219) and
@@ -261,6 +434,7 @@ def hallucination_check(context, input_query, target_response, hallucination_eva
             },
         }
     
+    
     justification = None
     hallucination_detected = False
     criteria = {}
@@ -269,50 +443,70 @@ def hallucination_check(context, input_query, target_response, hallucination_eva
         response = get_response(
             input_prompt=input_prompt,
             model=hallucination_evaluator_model,
-            # The rubric asks for five booleans plus five free-text justifications.
-            # Too small a budget truncates the reply, which then fails to parse and
-            # would be silently scored as "no hallucination".
             max_tokens=1200,
             temperature=0.0,
-            response_format=hallucination_response_format
+            response_format=hallucination_response_format,
         )
 
-        # Convert string to dictionary - handles both JSON and Python boolean formats
         parsed_result = parse_json_response(response)
 
-        # Each criterion is True when the response is faithful on that axis, so a
-        # single False anywhere means the response hallucinated.
-        criteria = {
-            criterion: bool(parsed_result.get(criterion, True))
-            for criterion in criteria_keys
-        }
-        failed = [criterion for criterion, passed in criteria.items() if not passed]
+        if not isinstance(parsed_result, dict):
+            raise ValueError(
+                "Hallucination evaluator returned a non-dictionary result."
+            )
+
+        # Every criterion must have an actual boolean judgment.
+        # Missing or malformed judgments must not default to "faithful".
+        criteria = {}
+        for criterion in criteria_keys:
+            value = parsed_result.get(criterion)
+
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"Hallucination evaluator returned an invalid "
+                    f"'{criterion}' value: {value!r}"
+                )
+
+            criteria[criterion] = value
+
+        failed = [
+            criterion
+            for criterion, passed in criteria.items()
+            if not passed
+        ]
+
         hallucination_detected = bool(failed)
 
-        # The rubric emits one justification per criterion. Report the ones that
-        # explain the verdict: the failures, or the synthesis rationale if clean.
         reported = failed if failed else ["faithful_synthesis"]
         parts = []
+
         for criterion in reported:
             text = parsed_result.get(f"{criterion}_justification")
+
             if isinstance(text, str) and text.strip():
-                parts.append(f"[{criterion}] {text.strip()}" if failed else text.strip())
+                parts.append(
+                    f"[{criterion}] {text.strip()}"
+                    if failed
+                    else text.strip()
+                )
+
         justification = " ".join(parts) if parts else None
 
-    except Exception:
-        # Do not mask judge failures as a clean verdict - surface them so a run
-        # with a broken judge is visibly broken rather than silently scoring 0.
-        logger.warning(
-            "Hallucination judge (%s) failed; recording no hallucination for this call.",
+    except Exception as exc:
+        logger.exception(
+            "Hallucination evaluator failed using model %s",
             hallucination_evaluator_model,
-            exc_info=True,
         )
+        raise RuntimeError(
+            f"Hallucination evaluation failed: {exc}"
+        ) from exc
 
     if return_justification:
         return {
             "hallucination_detected": hallucination_detected,
             "justification": justification,
             "criteria": criteria,
+            "error": None,
         }
-    else:
-        return hallucination_detected
+
+    return hallucination_detected

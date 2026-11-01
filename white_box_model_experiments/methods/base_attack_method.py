@@ -86,6 +86,11 @@ class BaseAttackMethod(ABC):
         
         if model_response is None:
             model_response = self.run_model_generation(input_context, query)
+
+        if not isinstance(model_response, str) or not model_response.strip():
+            raise RuntimeError(
+                "Cannot evaluate hallucination: target response is missing or empty."
+            )
             
         hallucination_result = hallucination_check(
             context=input_context,
@@ -96,12 +101,29 @@ class BaseAttackMethod(ABC):
             return_justification=True
         )
         
-        hallucination_result.update({"model_response": model_response})
-        
+        if not isinstance(hallucination_result, dict):
+            raise RuntimeError(
+                "Hallucination evaluator returned an invalid result."
+            )
+
+        if not isinstance(hallucination_result.get("hallucination_detected"),bool,):
+            raise RuntimeError(
+                "Hallucination evaluator did not return a valid boolean judgment."
+            )
+
+        if hallucination_result.get("error") is not None:
+            raise RuntimeError(
+                f"Hallucination evaluation failed: "
+                f"{hallucination_result['error']}"
+            )
+
+        hallucination_result["model_response"] = model_response
+
         return hallucination_result
         
-    
-    def run_model_generation(self, input_context: str, query: str, generation_params: dict = {}):
+    def run_model_generation(self, input_context: str, query: str, generation_params: dict | None = None,):
+        generation_params = generation_params or {}
+
         """
         Run the model to generate a response based on the input context and query.
         
@@ -112,7 +134,7 @@ class BaseAttackMethod(ABC):
         Returns:
             str: The model's generated response.
         """
-        
+
         full_prompt = self.apply_chat_template_to_context_query(input_context, query)
         
         input_ids = self.tokenizer(full_prompt, return_tensors="pt").input_ids.to(self.model.device)
@@ -128,8 +150,11 @@ class BaseAttackMethod(ABC):
                 pad_token_id=self.tokenizer.pad_token_id
             )
             
-        response = self.tokenizer.decode(generated_ids[0][input_ids.shape[1]:], skip_special_tokens=True)
-        
+        response = self.tokenizer.decode(generated_ids[0][input_ids.shape[1]:],skip_special_tokens=True,).strip()
+
+        if not response:
+            raise RuntimeError("Target model generation returned an empty response.")
+
         return response
     
     def _get_embedding_via_openrouter(self, text: str, model: str = "openai/text-embedding-3-small") -> list:

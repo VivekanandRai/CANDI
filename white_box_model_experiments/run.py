@@ -29,6 +29,7 @@ from methods.autodan.vanilla_autodan import VanillaAutoDAN
 from methods.sra.sra import SRA
 from methods.pair.pair import PAIR
 from methods.seca.vanilla_seca import VanillaSECA
+from methods.utils import (transform_query,validate_query_equivalence,QUERY_CATEGORIES,)
 
 env_file = Path(__file__).resolve().parent / ".env"
 if env_file.exists():
@@ -135,8 +136,8 @@ def load_model_and_tokenizer(hf_model_name: str):
     )
 
     # Use eager attention for compatibility
-    if hasattr(model.config, "_attn_implementation") and model.config._attn_implementation == "sdpa":
-        model.set_attn_implementation("eager")
+    # if hasattr(model.config, "_attn_implementation") and model.config._attn_implementation == "sdpa":
+    #     model.set_attn_implementation("eager")
 
     if torch.cuda.is_available():
         print(f"Model loaded. Memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB")
@@ -153,12 +154,54 @@ def run_attack(
     qa_pair: dict,
     config: Dict[str, Any],
     dataset_name: str,
+    category: str,
 ) -> dict:
     """Run the attack on a single QA pair based on config."""
     
-    question = qa_pair["query"]
+    original_question = qa_pair["query"]
+
+    
+    transformation = transform_query(
+        query=original_question,
+        category=category,
+    )
+
+    question = transformation["transformed_query"]
+
+    try:
+        transformation_validation = validate_query_equivalence(
+            original_query=original_question,
+            transformed_query=question,
+        )
+    except Exception as e:
+        return {
+            "skipped": True,
+            "skip_reason": "semantic_validation_error",
+            "validation_error": str(e),
+            "original_question": original_question,
+            "transformed_question": question,
+            "query_category": category,
+            "transformation": transformation,
+            "transformation_validation": None,
+        }
+
+    if not transformation_validation["is_equivalent"]:
+        return {
+            "skipped": True,
+            "skip_reason": "semantic_non_equivalence",
+            "original_question": original_question,
+            "transformed_question": question,
+            "query_category": category,
+            "transformation": transformation,
+            "transformation_validation": transformation_validation,
+        }
+
     correct_answer = qa_pair["answer"]
     context = qa_pair["citations"]
+
+    print(f"Category: {category}")
+    print(f"Original question: {original_question}")
+    print(f"Transformed question: {question}")
     
     base_method = config["base_method"]
     method_name = config["method"]
@@ -366,6 +409,12 @@ def run_attack(
     del attack
     torch.cuda.empty_cache()
     
+    result["original_question"] = original_question
+    result["transformed_question"] = question
+    result["query_category"] = category
+    result["transformation"] = transformation
+    result["transformation_validation"] = transformation_validation
+
     return result
 
 
@@ -504,9 +553,13 @@ def main():
     result_list = []
     failed_queries = 0
 
-    for i, qa_pair in enumerate(qa_dataset[:num_queries]):
+    for i, qa_pair, category in (
+        (i, qa_pair, category)
+        for i, qa_pair in enumerate(qa_dataset[:num_queries])
+        for category in QUERY_CATEGORIES
+    ):   
         print(f"\n{'='*60}")
-        print(f"Query {i + 1}/{num_queries}")
+        print(f"Query {i + 1}/{num_queries} | Category: {category}")
         print(f"Question: {qa_pair['query'][:100]}...")
         print(f"Context length: {len(qa_pair['citations'])} chars")
         print("=" * 60)
@@ -520,7 +573,37 @@ def main():
                 qa_pair=qa_pair,
                 config=config,
                 dataset_name=dataset_name,
+                category=category,
             )
+
+            
+            if result.get("skipped"):
+                skipped_entry = {
+                    "query_index": i,
+                    "query_category": category,
+                    "original_question": result["original_question"],
+                    "transformed_question": result["transformed_question"],
+                    "transformation": result.get("transformation"),
+                    "transformation_validation": result.get(
+                        "transformation_validation"
+                    ),
+                    "skipped": True,
+                    "skip_reason": result["skip_reason"],
+                    "validation_error": result.get("validation_error"),
+                }
+
+                result_list.append(skipped_entry)
+
+                with open(
+                    results_dir / f"result_{i}_{category}.json", "w"
+                ) as f:
+                    json.dump(skipped_entry, f, indent=4)
+
+                print(
+                    f"Skipped query {i + 1}, category {category}: "
+                    f"{result['skip_reason']}"
+                )
+                continue
 
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
@@ -528,10 +611,14 @@ def main():
             # Create result entry
             adversarial_query = result["adversarial_query"]
             best_suffix = result.get("best_string")
-            if best_suffix is None and adversarial_query.startswith(qa_pair["query"]):
-                best_suffix = adversarial_query[len(qa_pair["query"]):]
+            if best_suffix is None and adversarial_query.startswith(result["transformed_question"]):
+                best_suffix = adversarial_query[len(result["transformed_question"]):]
 
             result_entry = {
+                "query_category": category,
+                "transformed_question": result["transformed_question"],
+                "transformation": result.get("transformation"),
+                "transformation_validation": result.get("transformation_validation"),
                 "query_index": i,
                 "original_question": qa_pair["query"],
                 "expected_answer": qa_pair["answer"],
@@ -561,7 +648,7 @@ def main():
             result_list.append(result_entry)
 
             # Save individual result
-            with open(results_dir / f"result_{i}.json", "w") as f:
+            with open(results_dir / f"result_{i}_{category}.json", "w") as f:
                 json.dump(result_entry, f, indent=4)
 
             print(f"Finished query {i + 1}.")
@@ -610,23 +697,71 @@ def main():
 
     # Compute summary statistics
     if result_list:
-        initial_correct = sum(not r["initial_hallucination"] for r in result_list)
-        final_correct = sum(not r["final_hallucination"] for r in result_list)
-        attack_success_count = sum(
-            r["initial_hallucination"] == False and r["final_hallucination"] == True
-            for r in result_list
+
+        # Keep skipped transformations in the saved results,
+        # but exclude them from attack metric calculations.
+        attack_results = [
+            r for r in result_list
+            if not r.get("skipped", False)
+        ]
+
+        skipped_queries = sum(
+            1 for r in result_list if r.get("skipped", False)
         )
 
-        initial_accuracy = initial_correct / len(result_list)
-        final_accuracy = final_correct / len(result_list)
-        attack_success_rate = attack_success_count / initial_correct if initial_correct > 0 else 0.0
+        attacked_queries = len(attack_results)
 
-        # Get config parameters for summary, from the section belonging to the
-        # attack that actually ran (previously always read config["gcg"]["common"],
-        # so non-GCG runs reported empty/default hyperparameters).
-        common_params = config.get(config["base_method"], {}).get("common", {})
+        if attacked_queries > 0:
 
-        # Aggregate coherence and similarity metrics using mean
+            initial_correct = sum(
+                not r["initial_hallucination"]
+                for r in attack_results
+            )
+
+            final_correct = sum(
+                not r["final_hallucination"]
+                for r in attack_results
+            )
+
+            attack_success_count = sum(
+                r["initial_hallucination"] == False
+                and r["final_hallucination"] == True
+                for r in attack_results
+            )
+
+            initial_accuracy = initial_correct / attacked_queries
+            final_accuracy = final_correct / attacked_queries
+
+            attack_success_rate = (
+                attack_success_count / initial_correct
+                if initial_correct > 0 else 0.0
+            )
+
+            avg_time_per_query = (
+                sum(r["time_taken_seconds"] for r in attack_results)
+                / attacked_queries
+            )
+
+            total_attack_time = sum(
+                r["time_taken_seconds"] for r in attack_results
+            )
+
+        else:
+            initial_correct = 0
+            final_correct = 0
+            attack_success_count = 0
+            initial_accuracy = 0.0
+            final_accuracy = 0.0
+            attack_success_rate = 0.0
+            avg_time_per_query = 0.0
+            total_attack_time = 0.0
+
+        # Get config parameters for summary
+        common_params = config.get(
+            config["base_method"], {}
+        ).get("common", {})
+
+        # Aggregate coherence and similarity metrics
         coherence_aggregates = {
             "cosine_similarity": [],
             "semantic_equivalence_is_equivalent": [],
@@ -636,38 +771,58 @@ def main():
             "rougeL_f1": [],
         }
 
-        for result_entry in result_list:
-            if "cosine_similarity" in result_entry and result_entry["cosine_similarity"] is not None:
-                coherence_aggregates["cosine_similarity"].append(result_entry["cosine_similarity"])
-            
-            if "semantic_equivalence" in result_entry and result_entry["semantic_equivalence"] is not None:
-                sem_equiv = result_entry["semantic_equivalence"]
-                if isinstance(sem_equiv, dict) and "is_equivalent" in sem_equiv:
-                    # Convert boolean to int for aggregation
-                    is_equiv_value = sem_equiv["is_equivalent"]
-                    if isinstance(is_equiv_value, bool):
-                        coherence_aggregates["semantic_equivalence_is_equivalent"].append(int(is_equiv_value))
-            
-            if "adversarial_query_perplexity" in result_entry and result_entry["adversarial_query_perplexity"] is not None:
-                coherence_aggregates["adversarial_query_perplexity"].append(result_entry["adversarial_query_perplexity"])
-            
-            if "rouge_scores" in result_entry and result_entry["rouge_scores"] is not None:
-                rouge_scores = result_entry["rouge_scores"]
-                if isinstance(rouge_scores, dict):
-                    if rouge_scores.get("rouge1_f1") is not None:
-                        coherence_aggregates["rouge1_f1"].append(rouge_scores["rouge1_f1"])
-                    if rouge_scores.get("rouge2_f1") is not None:
-                        coherence_aggregates["rouge2_f1"].append(rouge_scores["rouge2_f1"])
-                    if rouge_scores.get("rougeL_f1") is not None:
-                        coherence_aggregates["rougeL_f1"].append(rouge_scores["rougeL_f1"])
+        for result_entry in attack_results:
 
-        # Compute mean aggregates
+            if (
+                "cosine_similarity" in result_entry
+                and result_entry["cosine_similarity"] is not None
+            ):
+                coherence_aggregates["cosine_similarity"].append(
+                    result_entry["cosine_similarity"]
+                )
+
+            if (
+                "semantic_equivalence" in result_entry
+                and result_entry["semantic_equivalence"] is not None
+            ):
+                sem_equiv = result_entry["semantic_equivalence"]
+
+                if isinstance(sem_equiv, dict) and "is_equivalent" in sem_equiv:
+                    is_equiv_value = sem_equiv["is_equivalent"]
+
+                    if isinstance(is_equiv_value, bool):
+                        coherence_aggregates[
+                            "semantic_equivalence_is_equivalent"
+                        ].append(int(is_equiv_value))
+
+            if (
+                "adversarial_query_perplexity" in result_entry
+                and result_entry["adversarial_query_perplexity"] is not None
+            ):
+                coherence_aggregates[
+                    "adversarial_query_perplexity"
+                ].append(result_entry["adversarial_query_perplexity"])
+
+            if (
+                "rouge_scores" in result_entry
+                and result_entry["rouge_scores"] is not None
+            ):
+                rouge_scores = result_entry["rouge_scores"]
+
+                if isinstance(rouge_scores, dict):
+                    for metric in ["rouge1_f1", "rouge2_f1", "rougeL_f1"]:
+                        if rouge_scores.get(metric) is not None:
+                            coherence_aggregates[metric].append(
+                                rouge_scores[metric]
+                            )
+
+        # Compute mean coherence metrics
         coherence_means = {}
+
         for metric_name, values in coherence_aggregates.items():
-            if values:
-                coherence_means[f"mean_{metric_name}"] = sum(values) / len(values)
-            else:
-                coherence_means[f"mean_{metric_name}"] = None
+            coherence_means[f"mean_{metric_name}"] = (
+                sum(values) / len(values) if values else None
+            )
 
         overall_summary = {
             "model_name": model_name,
@@ -676,21 +831,31 @@ def main():
             "method": config["method"],
             "config_path": str(config_path),
             "dataset_path": str(data_path),
+
             "num_optim_ids": common_params.get("optim_str_length"),
             "num_steps": common_params.get("num_steps", 100),
             "search_width": common_params.get("search_width", 64),
             "batch_size": common_params.get("batch_size", 4),
             "stagnation_patience": common_params.get("stagnation_patience", 20),
             "prompt_length_threshold": common_params.get("prompt_length_threshold"),
+
+            # Query counts
             "total_queries": len(result_list),
+            "attacked_queries": attacked_queries,
+            "skipped_queries": skipped_queries,
+            "failed_queries": failed_queries,
+
+            # Attack metrics (only successfully attacked queries)
             "initial_correct": initial_correct,
             "final_correct": final_correct,
             "attack_success_count": attack_success_count,
             "initial_accuracy": initial_accuracy,
             "final_accuracy": final_accuracy,
             "attack_success_rate": attack_success_rate,
-            "avg_time_per_query_seconds": sum(r["time_taken_seconds"] for r in result_list) / len(result_list),
-            "total_time_seconds": sum(r["time_taken_seconds"] for r in result_list),
+
+            # Timing (only successfully attacked queries)
+            "avg_time_per_query_seconds": avg_time_per_query,
+            "total_time_seconds": total_attack_time,
         }
 
         # Add coherence metric aggregates to summary
