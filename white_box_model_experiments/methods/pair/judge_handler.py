@@ -243,17 +243,15 @@ class HallucinationJudge:
             return result
         except Exception as exc:
             error_text = str(exc)
-            if self.verbose:
-                logger.warning("Hallucination judge failure: %s", error_text)
-            return {
-                "hallucination_detected": False,
-                "hallucination_score": 0.0,
-                "hallucination_confidence": 0.0,
-                "justification": f"Judge error: {error_text}",
-                "severity_level": "error",
-                "usage": None,
-                "error": error_text,
-            }
+
+            logger.exception(
+                "Hallucination judge failed using model %s",
+                self.judge_model,
+            )
+
+            raise RuntimeError(
+                f"Hallucination evaluation failed: {error_text}"
+            ) from exc
 
     def batch_evaluate(
         self,
@@ -264,6 +262,22 @@ class HallucinationJudge:
     ) -> list[Dict[str, Any]]:
         if correct_answers is None:
             correct_answers = [None] * len(contexts)
+
+        lengths = {
+            len(contexts),
+            len(queries),
+            len(responses),
+            len(correct_answers),
+        }
+
+        if len(lengths) != 1:
+            raise ValueError(
+                "batch_evaluate received lists with different lengths: "
+                f"contexts={len(contexts)}, "
+                f"queries={len(queries)}, "
+                f"responses={len(responses)}, "
+                f"correct_answers={len(correct_answers)}"
+            )
 
         return [
             self.evaluate(
@@ -426,8 +440,19 @@ Where similarity_score is a float between 0 and 1.
                     "error": None,
                 }
 
-            similarity = float(parsed.get("similarity_score", 0.0))
-            similarity = max(0.0, min(1.0, similarity))
+            raw_similarity = parsed.get("similarity_score")
+
+            if (
+                isinstance(raw_similarity, bool)
+                or not isinstance(raw_similarity, (int, float))
+                or not 0.0 <= raw_similarity <= 1.0
+            ):
+                raise ValueError(
+                    f"Invalid similarity_score value: {raw_similarity}"
+                )
+
+            similarity = float(raw_similarity)
+
             return {
                 "is_equivalent": similarity >= self.threshold,
                 "similarity_score": similarity,
@@ -438,24 +463,15 @@ Where similarity_score is a float between 0 and 1.
             }
         except Exception as exc:
             error_text = str(exc)
-            if self.verbose:
-                logger.warning("Semantic judge failure: %s", error_text)
-            if self.binary_mode:
-                return {
-                    "is_equivalent": True,
-                    "reasoning": f"Judge error fallback: {error_text}",
-                    "threshold": self.threshold,
-                    "usage": None,
-                    "error": error_text,
-                }
-            return {
-                "is_equivalent": True,
-                "similarity_score": 1.0,
-                "reasoning": f"Judge error fallback: {error_text}",
-                "threshold": self.threshold,
-                "usage": None,
-                "error": error_text,
-            }
+
+            logger.exception(
+                "Semantic-equivalence judge failed using model %s",
+                self.judge_model,
+            )
+
+            raise RuntimeError(
+                f"Semantic-equivalence evaluation failed: {error_text}"
+            ) from exc
 
     def update_model(self, judge_model: str) -> None:
         logger.info(f"Updating judge model from {self.judge_model} to {judge_model}")

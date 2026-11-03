@@ -105,6 +105,26 @@ class ConversationManager:
             feedback_dict: Detailed feedback from evaluation
             model_response: Target model's response (optional)
         """
+
+        status = feedback_dict.get("status")
+
+        non_evaluable_statuses = {
+            "attack_generation_failed",
+            "empty_attack_prompt",
+            "unchanged_prompt",
+            "target_generation_failed",
+            "empty_target_response",
+            "judge_evaluation_failed",
+        }
+
+        if status in non_evaluable_statuses:
+            logger.warning(
+                "Skipping conversation update for stream %s due to status: %s",
+                stream_idx,
+                status,
+            )
+            return
+        
         if stream_idx >= len(self.conversations):
             logger.warning(f"Invalid stream_idx {stream_idx}, skipping")
             return

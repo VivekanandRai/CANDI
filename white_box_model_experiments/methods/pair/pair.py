@@ -152,18 +152,42 @@ class PAIR(BaseAttackMethod):
         logger.info(f"Starting PAIR attack on query: {query}")
         
         # Get initial response and hallucination check
-        initial_response = self.run_model_generation(
-            input_context=input_context,
-            query=query,
-            generation_params={"max_new_tokens": 300},
-        )
-        
-        initial_hallucination_result = self.hallucination_judge.evaluate(
-            context=input_context,
-            query=query,
-            response=initial_response,
-            correct_answer=expected_response,
-        )
+        try:
+            initial_response = self.run_model_generation(
+                input_context=input_context,
+                query=query,
+                generation_params={"max_new_tokens": 300},
+            )
+
+        except Exception as exc:
+            logger.exception("Initial target generation failed")
+            initial_response = None
+
+            initial_hallucination_result = {
+                "hallucination_detected": None,
+                "justification": f"Initial generation failed: {exc}",
+                "error": str(exc),
+            }
+
+        else:
+            try:
+                if not isinstance(initial_response, str) or not initial_response.strip():
+                    raise RuntimeError("Initial target response is empty or invalid.")
+
+                initial_hallucination_result = self.hallucination_judge.evaluate(
+                    context=input_context,
+                    query=query,
+                    response=initial_response,
+                    correct_answer=expected_response,
+                )
+
+            except Exception as exc:
+                logger.exception("Initial hallucination evaluation failed")
+                initial_hallucination_result = {
+                    "hallucination_detected": None,
+                    "justification": f"Evaluation failed: {exc}",
+                    "error": str(exc),
+                }
         
         # Initialize conversation streams
         self._initialize_streams(query, expected_response)
@@ -189,8 +213,41 @@ class PAIR(BaseAttackMethod):
             scores_and_responses = []
             for stream_idx, attack_result in enumerate(attack_results):
                 adv_prompt = str(attack_result.get("prompt", "")).strip()
+
+                if not attack_result.get("success", True):
+                    scores_and_responses.append((
+                        0.0,
+                        None,
+                        {
+                            "improvement": attack_result.get("improvement", ""),
+                            "status": "attack_generation_failed",
+                            "error": attack_result.get("error", "Attack generation failed"),
+                        },
+                    ))
+                    continue
+
                 if not adv_prompt:
-                    scores_and_responses.append((0.0, None, {"improvement": "", "error": "Empty attack prompt"}))
+                    scores_and_responses.append((
+                        0.0,
+                        None,
+                        {
+                            "improvement": attack_result.get("improvement", ""),
+                            "status": "empty_attack_prompt",
+                            "error": "Attack model returned an empty prompt",
+                        },
+                    ))
+                    continue
+
+                if adv_prompt == query.strip():
+                    scores_and_responses.append((
+                        0.0,
+                        None,
+                        {
+                            "improvement": attack_result.get("improvement", ""),
+                            "status": "unchanged_prompt",
+                            "error": "Generated prompt is identical to the original query",
+                        },
+                    ))
                     continue
 
                 try:
@@ -200,27 +257,47 @@ class PAIR(BaseAttackMethod):
                         generation_params={"max_new_tokens": 300},
                     )
                 except Exception as exc:
-                    logger.error(f"Stream {stream_idx} target generation failed: {exc}")
+                    logger.exception("Stream %s target generation failed", stream_idx)
+
                     feedback = {
-                        "hallucination_detected": False,
-                        "hallucination_score": 0.0,
-                        "hallucination_justification": f"Generation error: {exc}",
-                        "is_semantically_equivalent": True,
-                        "similarity_reasoning": "Target generation failed",
+                        "status": "target_generation_failed",
                         "improvement": attack_result.get("improvement", ""),
                         "error": str(exc),
                     }
+
                     scores_and_responses.append((0.0, None, feedback))
                     continue
 
-                score, feedback = self._evaluate_response(
-                    adv_prompt=adv_prompt,
-                    original_query=query,
-                    model_response=model_response,
-                    input_context=input_context,
-                    expected_response=expected_response,
-                    improvement=str(attack_result.get("improvement", "")),
-                )
+                if not isinstance(model_response, str) or not model_response.strip():
+                    feedback = {
+                        "status": "empty_target_response",
+                        "improvement": attack_result.get("improvement", ""),
+                        "error": "Target model returned an empty response",
+                    }
+
+                    scores_and_responses.append((0.0, None, feedback))
+                    continue
+
+                try:
+                    score, feedback = self._evaluate_response(
+                        adv_prompt=adv_prompt,
+                        original_query=query,
+                        model_response=model_response,
+                        input_context=input_context,
+                        expected_response=expected_response,
+                        improvement=str(attack_result.get("improvement", "")),
+                    )
+                except Exception as exc:
+                    logger.exception("Stream %s candidate evaluation failed", stream_idx)
+
+                    feedback = {
+                        "status": "judge_evaluation_failed",
+                        "improvement": attack_result.get("improvement", ""),
+                        "error": str(exc),
+                    }
+
+                    scores_and_responses.append((0.0, model_response, feedback))
+                    continue
 
                 if attack_result.get("error"):
                     feedback["attack_error"] = attack_result["error"]
@@ -245,20 +322,41 @@ class PAIR(BaseAttackMethod):
                 logger.info(f"Found strong hallucination with score {best_overall_score:.2f}. Stopping.")
                 break
         
-        # Prepare final result
-        final_response = self.run_model_generation(
-            input_context=input_context,
-            query=best_overall_prompt,
-            generation_params={"max_new_tokens": 300},
-        )
-        
-        # Final hallucination evaluation using judge
-        final_hallucination_eval = self.hallucination_judge.evaluate(
-            context=input_context,
-            query=best_overall_prompt,
-            response=final_response,
-            correct_answer=expected_response,
-        )
+        # Prepare final response
+        try:
+            final_response = self.run_model_generation(
+                input_context=input_context,
+                query=best_overall_prompt,
+                generation_params={"max_new_tokens": 300},
+            )
+
+            if not isinstance(final_response, str) or not final_response.strip():
+                raise RuntimeError("Final target response is empty or invalid.")
+
+        except Exception as exc:
+            logger.exception("Final target generation failed")
+            final_response = None
+            final_hallucination_eval = {
+                "hallucination_detected": None,
+                "justification": f"Final generation failed: {exc}",
+                "error": str(exc),
+            }
+
+        else:
+            try:
+                final_hallucination_eval = self.hallucination_judge.evaluate(
+                    context=input_context,
+                    query=best_overall_prompt,
+                    response=final_response,
+                    correct_answer=expected_response,
+                )
+            except Exception as exc:
+                logger.exception("Final hallucination evaluation failed")
+                final_hallucination_eval = {
+                    "hallucination_detected": None,
+                    "justification": f"Final evaluation failed: {exc}",
+                    "error": str(exc),
+                }
         
         result = {
             "original_query": query,
@@ -270,9 +368,11 @@ class PAIR(BaseAttackMethod):
             "final_adversarial_response": final_response,
             "final_hallucination": final_hallucination_eval.get("hallucination_detected", False),
             "final_hallucination_justification": final_hallucination_eval.get("justification", ""),
+            "final_hallucination_error": final_hallucination_eval.get("error"),
             "initial_response": initial_response,
             "initial_hallucination": initial_hallucination_result.get("hallucination_detected", False),
             "initial_hallucination_justification": initial_hallucination_result.get("justification", ""),
+            "initial_hallucination_error": initial_hallucination_result.get("error"),
             "iterations_run": iterations_run,  # PAIR-specific for backward compatibility
             "conversation_history": self.conversation_manager.get_all_conversations(),
             "conversation_stats": self.conversation_manager.get_stats(),
@@ -451,7 +551,12 @@ Requirements:
             correct_answer=expected_response,
         )
         
-        hallucination_detected = bool(hallucination_eval.get("hallucination_detected", False))
+        hallucination_detected = hallucination_eval.get("hallucination_detected")
+        if not isinstance(hallucination_detected, bool):
+            raise ValueError(
+                f"Invalid hallucination_detected value: {hallucination_detected}"
+            )
+        
         hallucination_score = float(hallucination_eval.get("hallucination_score", 0.0))
         hallucination_confidence = float(hallucination_eval.get("hallucination_confidence", 0.0))
         hallucination_justification = str(hallucination_eval.get("justification", ""))
@@ -462,7 +567,12 @@ Requirements:
             adversarial=adv_prompt,
         )
         
-        is_equivalent = bool(similarity_eval.get("is_equivalent", False))
+        is_equivalent = similarity_eval.get("is_equivalent")
+        if not isinstance(is_equivalent, bool):
+            raise ValueError(
+                f"Invalid is_equivalent value: {is_equivalent}"
+            )
+        
         similarity_reasoning = str(similarity_eval.get("reasoning", ""))
 
         score = self._pair_score(

@@ -29,7 +29,6 @@ from methods.autodan.vanilla_autodan import VanillaAutoDAN
 from methods.sra.sra import SRA
 from methods.pair.pair import PAIR
 from methods.seca.vanilla_seca import VanillaSECA
-from methods.utils import (transform_query,validate_query_equivalence,QUERY_CATEGORIES,)
 
 env_file = Path(__file__).resolve().parent / ".env"
 if env_file.exists():
@@ -154,54 +153,14 @@ def run_attack(
     qa_pair: dict,
     config: Dict[str, Any],
     dataset_name: str,
-    category: str,
 ) -> dict:
     """Run the attack on a single QA pair based on config."""
     
-    original_question = qa_pair["query"]
-
-    
-    transformation = transform_query(
-        query=original_question,
-        category=category,
-    )
-
-    question = transformation["transformed_query"]
-
-    try:
-        transformation_validation = validate_query_equivalence(
-            original_query=original_question,
-            transformed_query=question,
-        )
-    except Exception as e:
-        return {
-            "skipped": True,
-            "skip_reason": "semantic_validation_error",
-            "validation_error": str(e),
-            "original_question": original_question,
-            "transformed_question": question,
-            "query_category": category,
-            "transformation": transformation,
-            "transformation_validation": None,
-        }
-
-    if not transformation_validation["is_equivalent"]:
-        return {
-            "skipped": True,
-            "skip_reason": "semantic_non_equivalence",
-            "original_question": original_question,
-            "transformed_question": question,
-            "query_category": category,
-            "transformation": transformation,
-            "transformation_validation": transformation_validation,
-        }
-
+    question = qa_pair["query"]
     correct_answer = qa_pair["answer"]
     context = qa_pair["citations"]
 
-    print(f"Category: {category}")
-    print(f"Original question: {original_question}")
-    print(f"Transformed question: {question}")
+    print(f"Question: {question}")
     
     base_method = config["base_method"]
     method_name = config["method"]
@@ -408,12 +367,6 @@ def run_attack(
     # Clean up attack object to free memory
     del attack
     torch.cuda.empty_cache()
-    
-    result["original_question"] = original_question
-    result["transformed_question"] = question
-    result["query_category"] = category
-    result["transformation"] = transformation
-    result["transformation_validation"] = transformation_validation
 
     return result
 
@@ -553,13 +506,9 @@ def main():
     result_list = []
     failed_queries = 0
 
-    for i, qa_pair, category in (
-        (i, qa_pair, category)
-        for i, qa_pair in enumerate(qa_dataset[:num_queries])
-        for category in QUERY_CATEGORIES
-    ):   
+    for i, qa_pair in enumerate(qa_dataset[:num_queries]):  
         print(f"\n{'='*60}")
-        print(f"Query {i + 1}/{num_queries} | Category: {category}")
+        print(f"Query {i + 1}/{num_queries}")
         print(f"Question: {qa_pair['query'][:100]}...")
         print(f"Context length: {len(qa_pair['citations'])} chars")
         print("=" * 60)
@@ -573,37 +522,7 @@ def main():
                 qa_pair=qa_pair,
                 config=config,
                 dataset_name=dataset_name,
-                category=category,
             )
-
-            
-            if result.get("skipped"):
-                skipped_entry = {
-                    "query_index": i,
-                    "query_category": category,
-                    "original_question": result["original_question"],
-                    "transformed_question": result["transformed_question"],
-                    "transformation": result.get("transformation"),
-                    "transformation_validation": result.get(
-                        "transformation_validation"
-                    ),
-                    "skipped": True,
-                    "skip_reason": result["skip_reason"],
-                    "validation_error": result.get("validation_error"),
-                }
-
-                result_list.append(skipped_entry)
-
-                with open(
-                    results_dir / f"result_{i}_{category}.json", "w"
-                ) as f:
-                    json.dump(skipped_entry, f, indent=4)
-
-                print(
-                    f"Skipped query {i + 1}, category {category}: "
-                    f"{result['skip_reason']}"
-                )
-                continue
 
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
@@ -611,14 +530,10 @@ def main():
             # Create result entry
             adversarial_query = result["adversarial_query"]
             best_suffix = result.get("best_string")
-            if best_suffix is None and adversarial_query.startswith(result["transformed_question"]):
-                best_suffix = adversarial_query[len(result["transformed_question"]):]
+            if best_suffix is None and adversarial_query.startswith(qa_pair["query"]):
+                best_suffix = adversarial_query[len(qa_pair["query"]):]
 
             result_entry = {
-                "query_category": category,
-                "transformed_question": result["transformed_question"],
-                "transformation": result.get("transformation"),
-                "transformation_validation": result.get("transformation_validation"),
                 "query_index": i,
                 "original_question": qa_pair["query"],
                 "expected_answer": qa_pair["answer"],
@@ -629,9 +544,11 @@ def main():
                 "initial_response": result.get("initial_response", ""),
                 "initial_hallucination": result["initial_hallucination"],
                 "initial_hallucination_justification": result.get("initial_hallucination_justification", ""),
+                "initial_hallucination_error": result.get("initial_hallucination_error"),
                 "final_response": result.get("final_adversarial_response", ""),
                 "final_hallucination": result["final_hallucination"],
                 "final_hallucination_justification": result.get("final_hallucination_justification", ""),
+                "final_hallucination_error": result.get("final_hallucination_error"),
                 "stagnation_triggered": result.get("stagnation_triggered", False),
                 "time_taken_seconds": duration,
                 "losses_history": result.get("losses", []),
@@ -648,7 +565,7 @@ def main():
             result_list.append(result_entry)
 
             # Save individual result
-            with open(results_dir / f"result_{i}_{category}.json", "w") as f:
+            with open(results_dir / f"result_{i}.json", "w") as f:
                 json.dump(result_entry, f, indent=4)
 
             print(f"Finished query {i + 1}.")
@@ -698,63 +615,66 @@ def main():
     # Compute summary statistics
     if result_list:
 
-        # Keep skipped transformations in the saved results,
-        # but exclude them from attack metric calculations.
-        attack_results = [
-            r for r in result_list
-            if not r.get("skipped", False)
-        ]
-
-        skipped_queries = sum(
-            1 for r in result_list if r.get("skipped", False)
-        )
-
+        # All entries in result_list represent successfully completed attacks.
+        attack_results = result_list
         attacked_queries = len(attack_results)
 
-        if attacked_queries > 0:
-
-            initial_correct = sum(
-                not r["initial_hallucination"]
-                for r in attack_results
+        # Only include queries with valid initial and final hallucination judgments.
+        evaluable_results = [
+            r for r in attack_results
+            if (
+                isinstance(r.get("initial_hallucination"), bool)
+                and isinstance(r.get("final_hallucination"), bool)
+                and not r.get("initial_hallucination_error")
+                and not r.get("final_hallucination_error")
             )
+        ]
 
-            final_correct = sum(
-                not r["final_hallucination"]
-                for r in attack_results
-            )
+        evaluable_queries = len(evaluable_results)
+        evaluation_failed_queries = attacked_queries - evaluable_queries
 
-            attack_success_count = sum(
-                r["initial_hallucination"] == False
-                and r["final_hallucination"] == True
-                for r in attack_results
-            )
+        initial_correct = sum(
+            not r["initial_hallucination"]
+            for r in evaluable_results
+        )
 
-            initial_accuracy = initial_correct / attacked_queries
-            final_accuracy = final_correct / attacked_queries
+        final_correct = sum(
+            not r["final_hallucination"]
+            for r in evaluable_results
+        )
 
-            attack_success_rate = (
-                attack_success_count / initial_correct
-                if initial_correct > 0 else 0.0
-            )
+        attack_success_count = sum(
+            r["initial_hallucination"] is False
+            and r["final_hallucination"] is True
+            for r in evaluable_results
+        )
 
-            avg_time_per_query = (
-                sum(r["time_taken_seconds"] for r in attack_results)
-                / attacked_queries
-            )
+        initial_accuracy = (
+            initial_correct / evaluable_queries
+            if evaluable_queries > 0 else 0.0
+        )
 
-            total_attack_time = sum(
-                r["time_taken_seconds"] for r in attack_results
-            )
+        final_accuracy = (
+            final_correct / evaluable_queries
+            if evaluable_queries > 0 else 0.0
+        )
 
-        else:
-            initial_correct = 0
-            final_correct = 0
-            attack_success_count = 0
-            initial_accuracy = 0.0
-            final_accuracy = 0.0
-            attack_success_rate = 0.0
-            avg_time_per_query = 0.0
-            total_attack_time = 0.0
+        # ASR is conditional on queries that were initially answered correctly.
+        attack_success_rate = (
+            attack_success_count / initial_correct
+            if initial_correct > 0 else 0.0
+        )
+
+        # Timing includes all completed attacks, even those with failed evaluations.
+        avg_time_per_query = (
+            sum(r["time_taken_seconds"] for r in attack_results)
+            / attacked_queries
+            if attacked_queries > 0 else 0.0
+        )
+
+        total_attack_time = sum(
+            r["time_taken_seconds"] for r in attack_results
+        )
 
         # Get config parameters for summary
         common_params = config.get(
@@ -840,12 +760,13 @@ def main():
             "prompt_length_threshold": common_params.get("prompt_length_threshold"),
 
             # Query counts
-            "total_queries": len(result_list),
+            "total_queries": min(num_queries, len(qa_dataset)),
             "attacked_queries": attacked_queries,
-            "skipped_queries": skipped_queries,
             "failed_queries": failed_queries,
+            "evaluable_queries": evaluable_queries,
+            "evaluation_failed_queries": evaluation_failed_queries,
 
-            # Attack metrics (only successfully attacked queries)
+            # Attack metrics (only queries with valid initial and final evaluations)
             "initial_correct": initial_correct,
             "final_correct": final_correct,
             "attack_success_count": attack_success_count,

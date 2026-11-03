@@ -319,13 +319,20 @@ class BaseAttackMethod(ABC):
             content = result["choices"][0]["message"]["content"]
             # Parse JSON from structured output response
             judgment = json.loads(content)
+            if (not isinstance(judgment, dict)
+                or not isinstance(judgment.get("is_equivalent"), bool)
+                or not isinstance(judgment.get("reasoning"), str)
+            ):
+                raise RuntimeError(
+                    "Semantic-equivalence evaluator returned an invalid judgment."
+                )
+
             return judgment
         except Exception as e:
             error_msg = f"Error computing semantic equivalence: {type(e).__name__}: {str(e)}"
             logger.error(error_msg)
             logger.debug(traceback.format_exc())
-            print(error_msg)
-            return {"is_equivalent": None, "reasoning": str(e)}
+            raise RuntimeError(error_msg) from e
     
     def _semantic_equivalence_via_llm_fast(self, original_query: str, adversarial_query: str, model: str = "openai/gpt-4o-mini") -> bool:
         
@@ -375,8 +382,7 @@ class BaseAttackMethod(ABC):
             error_msg = f"Error computing semantic equivalence (fast): {type(e).__name__}: {str(e)}"
             logger.error(error_msg)
             logger.debug(traceback.format_exc())
-            print(error_msg)
-            return None
+            raise RuntimeError(error_msg) from e
     
     def _compute_perplexity(self, text: str) -> float:
         """
